@@ -23,10 +23,23 @@ async function main(): Promise<void> {
   const bot = new AgentGateBot(config, watcher, executor, draftsRoot);
 
   await watcher.start();
+  // eslint-disable-next-line no-console
+  console.log('[agent-gate] watcher started, watching', config.watch.directory);
+
+  // Register handlers (sync setup)
   await bot.start();
+  // eslint-disable-next-line no-console
+  console.log('[agent-gate] bot handlers registered');
+
+  // Start long-poll in background (grammy's poll() blocks until stopped)
+  bot.poll().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error('[agent-gate] bot polling error:', err);
+    process.exit(1);
+  });
 
   // eslint-disable-next-line no-console
-  console.log('[agent-gate] ready');
+  console.log('[agent-gate] ready ✓');
 
   const shutdown = async (signal: string): Promise<void> => {
     // eslint-disable-next-line no-console

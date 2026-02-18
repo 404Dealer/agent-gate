@@ -31,15 +31,20 @@ export class DraftWatcher extends EventEmitter {
     await this.ensureDirectories();
     this.watcher = chokidar.watch(this.options.pendingDir, {
       persistent: true,
-      ignoreInitial: true,
+      ignoreInitial: false,
+      usePolling: true,
+      interval: this.options.pollIntervalMs,
       awaitWriteFinish: {
-        stabilityThreshold: Math.max(500, this.options.pollIntervalMs),
-        pollInterval: Math.max(100, Math.floor(this.options.pollIntervalMs / 2))
+        stabilityThreshold: 500,
+        pollInterval: 200
       }
     });
 
     this.watcher.on('add', async (filePath) => {
       if (extname(filePath) !== '.json') return;
+      if (basename(filePath).startsWith('.')) return;
+      // eslint-disable-next-line no-console
+      console.log(`[agent-gate] new draft detected: ${basename(filePath)}`);
       await this.handleNewFile(filePath);
     });
 

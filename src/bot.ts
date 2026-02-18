@@ -21,6 +21,34 @@ export class AgentGateBot {
   }
 
   async start(): Promise<void> {
+    // Global error handler — don't crash on recoverable errors
+    this.bot.catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error('[agent-gate] bot error:', err.message ?? err);
+    });
+
+    // Handle /start — greet authorized users, reject everyone else
+    this.bot.command('start', async (ctx) => {
+      const fromId = ctx.from?.id;
+      if (!fromId || !this.config.telegram.allowedUsers.includes(fromId)) {
+        await ctx.reply('🔒 This bot is private. You are not authorized.');
+        // eslint-disable-next-line no-console
+        console.log(`[agent-gate] unauthorized /start from user ${fromId} (@${ctx.from?.username ?? 'unknown'})`);
+        return;
+      }
+      await ctx.reply('🔐 *agent\\-gate* is active\\.\n\nDraft approvals will appear here\\. Only authorized users can approve or deny\\.', { parse_mode: 'MarkdownV2' });
+    });
+
+    // Block ALL other messages from unauthorized users
+    this.bot.use(async (ctx, next) => {
+      const fromId = ctx.from?.id;
+      if (!fromId || !this.config.telegram.allowedUsers.includes(fromId)) {
+        // Silent drop — don't even acknowledge
+        return;
+      }
+      await next();
+    });
+
     this.bot.callbackQuery(/^(approve|deny):(.+)$/, async (ctx) => {
       const fromId = ctx.from?.id;
       if (!fromId || !this.config.telegram.allowedUsers.includes(fromId)) {
@@ -34,8 +62,20 @@ export class AgentGateBot {
       const deniedPath = resolve(this.draftsRoot, 'denied', fileName);
       const pendingPath = resolve(this.draftsRoot, 'pending', fileName);
 
-      const raw = await readFile(pendingPath, 'utf8');
+      let raw: string;
+      try {
+        raw = await readFile(pendingPath, 'utf8');
+      } catch {
+        await ctx.answerCallbackQuery({ text: '⚠️ Draft expired or already processed', show_alert: true });
+        await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+        return;
+      }
       const draft = DraftSchema.parse(JSON.parse(raw));
+
+      const originalText = ctx.callbackQuery.message?.text ?? '';
+      const shortId = draft.id.slice(0, 8);
+      const subjectLine = (draft.payload as { subject?: string }).subject ?? 'Untitled';
+      const timestamp = new Date().toLocaleString('en-US', { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit', hour12: true });
 
       if (action === 'approve') {
         const approvedDraft = updateStatus(draft, 'approved', {
@@ -49,9 +89,21 @@ export class AgentGateBot {
 
         await writeFile(pendingPath, JSON.stringify(approvedDraft, null, 2), 'utf8');
         await rename(pendingPath, approvedPath);
-        await ctx.editMessageReplyMarkup({ reply_markup: undefined });
-        await ctx.reply(`✅ Approved draft ${approvedDraft.id}`);
-        await this.executor.executeApprovedDraft(approvedPath);
+
+        // Edit original message to show approved status
+        const statusLine = `\n\n✅ *APPROVED* at ${timestamp}`;
+        await ctx.editMessageText(originalText + statusLine, { parse_mode: 'Markdown' }).catch(() => {});
+
+        // Execute and report result
+        try {
+          await this.executor.executeApprovedDraft(approvedPath);
+          await ctx.answerCallbackQuery({ text: '✅ Sent successfully!' });
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          await ctx.reply(`⚠️ Approved but send failed: ${errMsg}`);
+          await ctx.answerCallbackQuery({ text: '⚠️ Send failed', show_alert: true });
+        }
+        return;
       }
 
       if (action === 'deny') {
@@ -66,17 +118,29 @@ export class AgentGateBot {
 
         await writeFile(pendingPath, JSON.stringify(deniedDraft, null, 2), 'utf8');
         await rename(pendingPath, deniedPath);
-        await ctx.editMessageReplyMarkup({ reply_markup: undefined });
-        await ctx.reply(`❌ Denied draft ${deniedDraft.id}`);
+
+        // Edit original message to show denied status
+        const statusLine = `\n\n❌ *DENIED* at ${timestamp}`;
+        await ctx.editMessageText(originalText + statusLine, { parse_mode: 'Markdown' }).catch(() => {});
+        await ctx.answerCallbackQuery({ text: '❌ Draft denied' });
+        return;
       }
 
       await ctx.answerCallbackQuery();
     });
 
     this.watcher.on('draft', async ({ draft, filePath }) => {
-      await this.sendDraftForApproval(draft, basename(filePath));
+      try {
+        await this.sendDraftForApproval(draft, basename(filePath));
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(`[agent-gate] failed to send draft preview for ${basename(filePath)}:`, err instanceof Error ? err.message : err);
+      }
     });
+  }
 
+  /** Long-running polling — call without await or handle the promise separately */
+  async poll(): Promise<void> {
     await this.bot.start();
   }
 
@@ -98,17 +162,17 @@ export class AgentGateBot {
     const text = [
       draft.type === 'email' ? '📧 *New Email Draft*' : '🪝 *New Webhook Draft*',
       '',
-      `From: ${payload.from ?? '[n/a]'}`,
-      `To: ${to}`,
-      `Subject: ${payload.subject ?? '[n/a]'}`,
+      `*From:* ${payload.from ?? '[n/a]'}`,
+      `*To:* ${to}`,
+      `*Subject:* ${payload.subject ?? '[n/a]'}`,
       '',
-      '---',
+      '─────────────',
       preview(bodyPreview, 700),
-      '---',
+      '─────────────',
       '',
-      `Source: ${draft.source}`,
-      `Context: ${draft.metadata.context || '[none]'}`,
-      `Priority: ${draft.metadata.priority || 'normal'}`
+      `*Source:* ${draft.source}`,
+      `*Context:* ${draft.metadata.context || '[none]'}`,
+      `*Priority:* ${draft.metadata.priority || 'normal'}`
     ].join('\n');
 
     const keyboard = new InlineKeyboard()

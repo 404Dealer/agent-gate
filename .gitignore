@@ -1,0 +1,9 @@
+config.yaml
+audit.log
+node_modules/
+dist/
+drafts/pending/*.json
+drafts/approved/*.json
+drafts/sent/*.json
+drafts/denied/*.json
+drafts/failed/*.json
