@@ -1,0 +1,26 @@
+telegram:
+  botToken: "${AGENT_GATE_BOT_TOKEN}"
+  allowedUsers: [2061243435]
+
+watch:
+  directory: "./drafts/pending"
+  pollIntervalMs: 2000
+
+providers:
+  zoho:
+    type: "email-zoho"
+    clientId: "${ZOHO_CLIENT_ID}"
+    clientSecret: "${ZOHO_CLIENT_SECRET}"
+    refreshToken: "${ZOHO_REFRESH_TOKEN}"
+    accountId: "${ZOHO_ACCOUNT_ID}"
+
+  log:
+    type: "log-only"
+
+defaults:
+  provider: "zoho"
+  autoDeleteAfterDays: 30
+
+audit:
+  enabled: true
+  logFile: "./audit.log"

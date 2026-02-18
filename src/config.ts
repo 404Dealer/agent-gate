@@ -1,0 +1,67 @@
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import YAML from 'yaml';
+import { z } from 'zod';
+
+const TelegramConfigSchema = z.object({
+  botToken: z.string().min(1),
+  allowedUsers: z.array(z.number().int()).min(1)
+});
+
+const WatchConfigSchema = z.object({
+  directory: z.string().default('./drafts/pending'),
+  pollIntervalMs: z.number().int().positive().default(2000)
+});
+
+const ProviderSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('log-only') }),
+  z.object({
+    type: z.literal('email-zoho'),
+    clientId: z.string().min(1),
+    clientSecret: z.string().min(1),
+    refreshToken: z.string().min(1),
+    accountId: z.string().min(1)
+  })
+]);
+
+const ConfigSchema = z.object({
+  telegram: TelegramConfigSchema,
+  watch: WatchConfigSchema,
+  providers: z.record(ProviderSchema),
+  defaults: z.object({
+    provider: z.string().min(1),
+    autoDeleteAfterDays: z.number().int().positive().default(30)
+  }),
+  audit: z.object({
+    enabled: z.boolean().default(true),
+    logFile: z.string().default('./audit.log')
+  })
+});
+
+export type AgentGateConfig = z.infer<typeof ConfigSchema>;
+export type ProviderConfig = z.infer<typeof ProviderSchema>;
+
+function interpolateEnv(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return value.replace(/\$\{([A-Z0-9_]+)\}/g, (_, name: string) => process.env[name] ?? '');
+  }
+  if (Array.isArray(value)) {
+    return value.map(interpolateEnv);
+  }
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = interpolateEnv(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+export async function loadConfig(configPath?: string): Promise<AgentGateConfig> {
+  const path = resolve(configPath ?? process.env.AGENT_GATE_CONFIG ?? 'config.yaml');
+  const raw = await readFile(path, 'utf8');
+  const parsed = YAML.parse(raw);
+  const interpolated = interpolateEnv(parsed);
+  return ConfigSchema.parse(interpolated);
+}
