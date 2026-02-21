@@ -1,8 +1,10 @@
 import chokidar, { type FSWatcher } from 'chokidar';
 import { EventEmitter } from 'node:events';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, resolve } from 'node:path';
 import { DraftSchema, type Draft } from './schema.js';
+
+const MAX_DRAFT_SIZE_BYTES = 512 * 1024;
 
 export interface DraftEvent {
   draft: Draft;
@@ -11,7 +13,7 @@ export interface DraftEvent {
 
 export interface WatcherOptions {
   rootDir: string;
-  pendingDir: string;
+  inboxDir: string;
   pollIntervalMs: number;
 }
 
@@ -22,6 +24,10 @@ export class DraftWatcher extends EventEmitter {
     super();
   }
 
+  private get pendingDir(): string {
+    return resolve(this.options.rootDir, 'pending');
+  }
+
   async ensureDirectories(): Promise<void> {
     const dirs = ['pending', 'approved', 'sent', 'denied', 'failed'].map((name) => resolve(this.options.rootDir, name));
     await Promise.all(dirs.map((dir) => mkdir(dir, { recursive: true })));
@@ -29,7 +35,7 @@ export class DraftWatcher extends EventEmitter {
 
   async start(): Promise<void> {
     await this.ensureDirectories();
-    this.watcher = chokidar.watch(this.options.pendingDir, {
+    this.watcher = chokidar.watch(this.options.inboxDir, {
       persistent: true,
       ignoreInitial: false,
       usePolling: true,
@@ -58,24 +64,38 @@ export class DraftWatcher extends EventEmitter {
     this.watcher = null;
   }
 
-  private async handleNewFile(filePath: string): Promise<void> {
+  private async handleNewFile(inboxPath: string): Promise<void> {
+    const pendingPath = resolve(this.pendingDir, basename(inboxPath));
+
     try {
-      const raw = await readFile(filePath, 'utf8');
+      const entry = await lstat(inboxPath);
+      if (!entry.isFile()) {
+        throw new Error('Invalid draft file type: only regular files are allowed');
+      }
+      if (entry.size > MAX_DRAFT_SIZE_BYTES) {
+        throw new Error(`Draft file too large: ${entry.size} bytes (max ${MAX_DRAFT_SIZE_BYTES})`);
+      }
+
+      await rename(inboxPath, pendingPath);
+
+      const raw = await readFile(pendingPath, 'utf8');
       const parsed = JSON.parse(raw);
       const draft = DraftSchema.parse(parsed);
-      this.emit('draft', { draft, filePath } satisfies DraftEvent);
+      this.emit('draft', { draft, filePath: pendingPath } satisfies DraftEvent);
     } catch (error) {
-      const failedPath = resolve(this.options.rootDir, 'failed', basename(filePath));
+      const failedPath = resolve(this.options.rootDir, 'failed', basename(inboxPath));
       const payload = {
         error: error instanceof Error ? error.message : String(error),
-        filePath,
+        filePath: pendingPath,
         failedAt: new Date().toISOString()
       };
       await mkdir(dirname(failedPath), { recursive: true });
-      await rename(filePath, failedPath).catch(async () => {
-        await writeFile(failedPath, JSON.stringify(payload, null, 2), 'utf8');
-      });
-      this.emit('malformed', { filePath, failedPath, error: payload.error });
+      await rename(pendingPath, failedPath)
+        .catch(async () => rename(inboxPath, failedPath))
+        .catch(async () => {
+          await writeFile(failedPath, JSON.stringify(payload, null, 2), 'utf8');
+        });
+      this.emit('malformed', { filePath: pendingPath, failedPath, error: payload.error });
     }
   }
 }

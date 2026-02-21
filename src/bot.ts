@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto';
 import { Bot, InlineKeyboard } from 'grammy';
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 import type { AgentGateConfig } from './config.js';
 import type { DraftWatcher } from './watcher.js';
@@ -7,9 +8,11 @@ import { DraftSchema, updateStatus, type Draft } from './schema.js';
 import { Executor } from './executor.js';
 
 const preview = (value: string, limit = 500): string => (value.length > limit ? `${value.slice(0, limit)}...` : value);
+const sha256short = (value: string): string => createHash('sha256').update(value).digest('hex').slice(0, 16);
 
 export class AgentGateBot {
   private readonly bot: Bot;
+  private readonly callbackFileIndex = new Map<string, string>();
 
   constructor(
     private readonly config: AgentGateConfig,
@@ -36,7 +39,7 @@ export class AgentGateBot {
         console.log(`[agent-gate] unauthorized /start from user ${fromId} (@${ctx.from?.username ?? 'unknown'})`);
         return;
       }
-      await ctx.reply('🔐 *agent\\-gate* is active\\.\n\nDraft approvals will appear here\\. Only authorized users can approve or deny\\.', { parse_mode: 'MarkdownV2' });
+      await ctx.reply('agent-gate is active. Draft approvals will appear here. Only authorized users can approve or deny.');
     });
 
     // Block ALL other messages from unauthorized users
@@ -49,7 +52,7 @@ export class AgentGateBot {
       await next();
     });
 
-    this.bot.callbackQuery(/^(approve|deny):(.+)$/, async (ctx) => {
+    this.bot.callbackQuery(/^(approve|deny):([a-f0-9]{16})(?::([a-f0-9]{16}))?$/, async (ctx) => {
       const fromId = ctx.from?.id;
       if (!fromId || !this.config.telegram.allowedUsers.includes(fromId)) {
         await ctx.answerCallbackQuery({ text: 'Not authorized', show_alert: true });
@@ -57,7 +60,14 @@ export class AgentGateBot {
       }
 
       const action = ctx.match[1];
-      const fileName = ctx.match[2];
+      const callbackToken = ctx.match[2];
+      const expectedHash = ctx.match[3];
+      const fileName = await this.resolvePendingFileName(callbackToken);
+      if (!fileName) {
+        await ctx.answerCallbackQuery({ text: '⚠️ Draft expired or already processed', show_alert: true });
+        await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+        return;
+      }
       const approvedPath = resolve(this.draftsRoot, 'approved', fileName);
       const deniedPath = resolve(this.draftsRoot, 'denied', fileName);
       const pendingPath = resolve(this.draftsRoot, 'pending', fileName);
@@ -70,12 +80,25 @@ export class AgentGateBot {
         await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
         return;
       }
+
+      if (action === 'approve') {
+        if (!expectedHash) {
+          await ctx.answerCallbackQuery({ text: '⚠️ Missing draft hash. Re-open draft.', show_alert: true });
+          return;
+        }
+
+        const actualHash = sha256short(raw);
+        if (actualHash !== expectedHash) {
+          await ctx.answerCallbackQuery({ text: '⚠️ Draft changed since preview. Approval rejected.', show_alert: true });
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          return;
+        }
+      }
+
       const draft = DraftSchema.parse(JSON.parse(raw));
 
       const originalText = ctx.callbackQuery.message?.text ?? '';
-      const shortId = draft.id.slice(0, 8);
-      const subjectLine = (draft.payload as { subject?: string }).subject ?? 'Untitled';
-      const timestamp = new Date().toLocaleString('en-US', { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit', hour12: true });
+      const timestamp = new Date().toLocaleString('en-US', { timeZone: this.config.defaults.timezone, hour: 'numeric', minute: '2-digit', hour12: true });
 
       if (action === 'approve') {
         const approvedDraft = updateStatus(draft, 'approved', {
@@ -91,8 +114,8 @@ export class AgentGateBot {
         await rename(pendingPath, approvedPath);
 
         // Edit original message to show approved status
-        const statusLine = `\n\n✅ *APPROVED* at ${timestamp}`;
-        await ctx.editMessageText(originalText + statusLine, { parse_mode: 'Markdown' }).catch(() => {});
+        const statusLine = `\n\n✅ APPROVED at ${timestamp}`;
+        await ctx.editMessageText(originalText + statusLine).catch(() => {});
 
         // Execute and report result
         try {
@@ -120,8 +143,8 @@ export class AgentGateBot {
         await rename(pendingPath, deniedPath);
 
         // Edit original message to show denied status
-        const statusLine = `\n\n❌ *DENIED* at ${timestamp}`;
-        await ctx.editMessageText(originalText + statusLine, { parse_mode: 'Markdown' }).catch(() => {});
+        const statusLine = `\n\n❌ DENIED at ${timestamp}`;
+        await ctx.editMessageText(originalText + statusLine).catch(() => {});
         await ctx.answerCallbackQuery({ text: '❌ Draft denied' });
         return;
       }
@@ -156,45 +179,67 @@ export class AgentGateBot {
       body?: string;
     };
 
+    const draftPath = resolve(this.draftsRoot, 'pending', fileName);
+    const draftRaw = await readFile(draftPath, 'utf8');
+    const draftHash = sha256short(draftRaw);
+
     const bodyPreview = payload.body ? preview(payload.body) : '[no body]';
     const to = Array.isArray(payload.to) ? payload.to.join(', ') : (payload.to ?? '[none]');
 
     const text = [
-      draft.type === 'email' ? '📧 *New Email Draft*' : '🪝 *New Webhook Draft*',
+      draft.type === 'email' ? '📧 New Email Draft' : '🪝 New Webhook Draft',
       '',
-      `*From:* ${payload.from ?? '[n/a]'}`,
-      `*To:* ${to}`,
-      `*Subject:* ${payload.subject ?? '[n/a]'}`,
+      `From: ${payload.from ?? '[n/a]'}`,
+      `To: ${to}`,
+      `Subject: ${payload.subject ?? '[n/a]'}`,
       '',
       '─────────────',
       preview(bodyPreview, 700),
       '─────────────',
       '',
-      `*Source:* ${draft.source}`,
-      `*Context:* ${draft.metadata.context || '[none]'}`,
-      `*Priority:* ${draft.metadata.priority || 'normal'}`
+      `Source: ${draft.source}`,
+      `Context: ${draft.metadata.context || '[none]'}`,
+      `Priority: ${draft.metadata.priority || 'normal'}`
     ].join('\n');
 
+    const callbackToken = sha256short(fileName);
+    this.callbackFileIndex.set(callbackToken, fileName);
     const keyboard = new InlineKeyboard()
-      .text('✅ Approve', `approve:${fileName}`)
-      .text('❌ Deny', `deny:${fileName}`);
+      .text('✅ Approve', `approve:${callbackToken}:${draftHash}`)
+      .text('❌ Deny', `deny:${callbackToken}`);
 
     for (const userId of this.config.telegram.allowedUsers) {
-      const sent = await this.bot.api.sendMessage(userId, text, {
-        parse_mode: 'Markdown',
+      await this.bot.api.sendMessage(userId, text, {
         reply_markup: keyboard
       });
-
-      const draftPath = resolve(this.draftsRoot, 'pending', fileName);
-      const raw = await readFile(draftPath, 'utf8');
-      const currentDraft = DraftSchema.parse(JSON.parse(raw));
-      const patched = updateStatus(currentDraft, currentDraft.status, {
-        approval: {
-          ...currentDraft.approval,
-          telegramMessageId: sent.message_id
-        }
-      });
-      await writeFile(draftPath, JSON.stringify(patched, null, 2), 'utf8');
     }
+  }
+
+  private async resolvePendingFileName(callbackToken: string): Promise<string | null> {
+    const knownFile = this.callbackFileIndex.get(callbackToken);
+    if (knownFile) {
+      return knownFile;
+    }
+
+    const pendingDir = resolve(this.draftsRoot, 'pending');
+    let entries: string[];
+    try {
+      entries = await readdir(pendingDir);
+    } catch {
+      return null;
+    }
+
+    for (const entry of entries) {
+      if (!entry.endsWith('.json')) {
+        continue;
+      }
+      const token = sha256short(entry);
+      this.callbackFileIndex.set(token, entry);
+      if (token === callbackToken) {
+        return entry;
+      }
+    }
+
+    return null;
   }
 }

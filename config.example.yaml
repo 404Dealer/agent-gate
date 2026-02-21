@@ -1,9 +1,9 @@
 telegram:
   botToken: "${AGENT_GATE_BOT_TOKEN}"
-  allowedUsers: [2061243435]
+  allowedUsers: [123456789]  # Your Telegram user ID(s)
 
 watch:
-  directory: "./drafts/pending"
+  directory: "./drafts/inbox"
   pollIntervalMs: 2000
 
 providers:
@@ -13,12 +13,14 @@ providers:
     clientSecret: "${ZOHO_CLIENT_SECRET}"
     refreshToken: "${ZOHO_REFRESH_TOKEN}"
     accountId: "${ZOHO_ACCOUNT_ID}"
+    fromAddress: "you@yourdomain.com"
 
   log:
     type: "log-only"
 
 defaults:
-  provider: "zoho"
+  provider: "log"
+  timezone: "UTC"
   autoDeleteAfterDays: 30
 
 audit:

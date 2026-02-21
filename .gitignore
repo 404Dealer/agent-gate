@@ -2,8 +2,13 @@ config.yaml
 audit.log
 node_modules/
 dist/
+drafts/inbox/*.json
 drafts/pending/*.json
 drafts/approved/*.json
 drafts/sent/*.json
 drafts/denied/*.json
 drafts/failed/*.json
+
+# Internal development docs (not for public repo)
+PLAN.md
+ISOLATION-PLAN.md

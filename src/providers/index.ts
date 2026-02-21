@@ -1,31 +1,19 @@
+import type { ProviderConfig } from '../config.js';
 import type { Draft } from '../schema.js';
-import type { AgentGateConfig } from '../config.js';
-import type { LogOnlyProvider } from './log-only.js';
-import type { ZohoEmailProvider } from './email-zoho.js';
+import { LogOnlyProvider } from './log-only.js';
+import { ZohoEmailProvider } from './email-zoho.js';
 
-export interface ExecutionContext {
-  config: AgentGateConfig;
+export interface ProviderResult {
+  providerMessageId?: string;
+  details?: string;
 }
 
 export interface Provider {
-  name: string;
-  send(draft: Draft, context: ExecutionContext): Promise<{ providerMessageId?: string; details?: string }>;
+  send(draft: Draft): Promise<ProviderResult>;
 }
 
-export type ProviderInstance = LogOnlyProvider | ZohoEmailProvider;
-
-export class ProviderRegistry {
-  private readonly providers = new Map<string, Provider>();
-
-  register(name: string, provider: Provider): void {
-    this.providers.set(name, provider);
-  }
-
-  get(name: string): Provider {
-    const provider = this.providers.get(name);
-    if (!provider) {
-      throw new Error(`Provider not registered: ${name}`);
-    }
-    return provider;
-  }
+export function createProvider(config: ProviderConfig): Provider {
+  if (config.type === 'log-only') return new LogOnlyProvider();
+  if (config.type === 'email-zoho') return new ZohoEmailProvider(config);
+  throw new Error(`Unsupported provider type: ${(config as { type?: string }).type ?? 'unknown'}`);
 }
