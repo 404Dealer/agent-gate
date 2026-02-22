@@ -336,6 +336,21 @@ agent-gate takes a different approach: **structural security**. The approval gat
 
 This is the same principle behind air-gapped networks, hardware security modules, and two-person integrity controls — applied to AI agents.
 
+## AI Agent Skill
+
+The `skill/` directory contains an agent skill (compatible with [OpenClaw](https://openclaw.ai), NanoClaw, and any framework that uses SKILL.md-based skill loading):
+
+```
+skill/
+├── SKILL.md              # Instructions for the AI agent
+└── scripts/
+    └── draft-email.sh    # Helper script for drafting emails
+```
+
+The skill teaches an AI agent how to write properly-formatted draft files. The agent learns the schema, constraints, and workflow — then uses `sg agentgate-inbox` (or the helper script) to drop drafts into the inbox.
+
+Install the skill in your agent framework, point it at your agent-gate inbox, and your agent can propose emails that you approve via Telegram.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
