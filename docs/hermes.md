@@ -88,6 +88,8 @@ sudo scripts/configure-provider-secrets.sh zoho
 
 Do not paste Gmail/Zoho/Outlook refresh tokens, SMTP passwords, API keys, or the agent-gate approval bot token into Hermes. Hermes can verify that secret references exist, but it should not print or receive their values.
 
+Do not rely on “Hermes will delete the credentials afterward” as a security boundary. Once Hermes sees a secret, it may already be present in chat/session history, logs, shell history, model context, or backups. The secure pattern is: Hermes installs infrastructure, then a human/OAuth flow gives secrets directly to `agentgate`.
+
 See [credential-handoff.md](credential-handoff.md) for the detailed operator responsibilities and token patterns.
 
 ## Give Hermes Write-Only Inbox Access

@@ -60,6 +60,27 @@ sudo scripts/configure-provider-secrets.sh zoho
 
 This script prompts for secrets and stores them in the `agentgate` user's `pass` store. Do **not** paste these values into a Hermes chat, Telegram DM with Hermes, issue comment, PR comment, or terminal command that Hermes is executing.
 
+## Recommended Credential Model
+
+The preferred model is:
+
+```text
+Hermes installs infrastructure -> human/OAuth flow gives secrets directly to agentgate
+```
+
+Hermes may install packages, create users/groups, write non-secret config, and verify service health. Provider send credentials should enter through either:
+
+1. a human-run local/SSH helper such as `scripts/configure-provider-secrets.sh`; or
+2. a future OAuth browser/device flow that terminates as the `agentgate` service user and writes directly to the `agentgate` secret store.
+
+Do **not** treat this as equivalent:
+
+```text
+Hermes receives secret -> Hermes stores it -> Hermes deletes it
+```
+
+Deletion is cleanup, not isolation. Once Hermes receives a secret, it may already exist in chat history, session logs, model context, terminal output, shell history, crash logs, or backups. If the goal is a hard send boundary, Hermes should never receive the send credential in the first place.
+
 ## Why Not Enter Secrets in the Approval Bot?
 
 The approval bot should stay narrow:
