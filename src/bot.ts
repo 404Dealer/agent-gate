@@ -1,18 +1,106 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { Bot, InlineKeyboard } from 'grammy';
-import { readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 import type { AgentGateConfig } from './config.js';
 import type { DraftWatcher } from './watcher.js';
 import { DraftSchema, updateStatus, type Draft } from './schema.js';
 import { Executor } from './executor.js';
 
-const preview = (value: string, limit = 500): string => (value.length > limit ? `${value.slice(0, limit)}...` : value);
-const sha256short = (value: string): string => createHash('sha256').update(value).digest('hex').slice(0, 16);
+export interface ApprovalPreviewOptions {
+  configuredSender: string;
+  providerName: string;
+  bodyPreviewChars: number;
+  allowTruncatedApproval: boolean;
+}
+
+export interface ApprovalPreview {
+  text: string;
+  canApprove: boolean;
+  fullBodyChars: number;
+  shownBodyChars: number;
+}
+
+export interface ApprovalTokenRecord {
+  callbackToken: string;
+  fileName: string;
+  hash: string;
+  expiresAt: number;
+}
+
+const APPROVAL_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+const preview = (value: string, limit: number): string => (value.length > limit ? `${value.slice(0, limit)}...` : value);
+export const sha256hex = (value: string): string => createHash('sha256').update(value).digest('hex');
+
+export function createApprovalToken(fileName: string, rawDraft: string, ttlMs = APPROVAL_TOKEN_TTL_MS): ApprovalTokenRecord {
+  return {
+    callbackToken: randomBytes(16).toString('hex'),
+    fileName,
+    hash: sha256hex(rawDraft),
+    expiresAt: Date.now() + ttlMs
+  };
+}
+
+export function buildApprovalPreview(draft: Draft, options: ApprovalPreviewOptions): ApprovalPreview {
+  const payload = draft.payload as {
+    from?: string;
+    to?: string | string[];
+    subject?: string;
+    body?: string;
+  };
+
+  const body = payload.body ?? '[no body]';
+  const shownBody = preview(body, options.bodyPreviewChars);
+  const isTruncated = body.length > options.bodyPreviewChars;
+  const canApprove = !isTruncated || options.allowTruncatedApproval;
+  const to = Array.isArray(payload.to) ? payload.to.join(', ') : (payload.to ?? '[none]');
+  const fromLine = draft.type === 'email'
+    ? `From: ${options.configuredSender}`
+    : `Provider: ${options.providerName}`;
+  const ignoredFromLine = draft.type === 'email' && payload.from
+    ? `Draft requested From (ignored): ${payload.from}`
+    : null;
+
+  const warningLines = isTruncated
+    ? [
+        '⚠️ Body preview is truncated.',
+        canApprove
+          ? 'Approval is allowed by config, but review the full draft file before approving long content.'
+          : 'APPROVAL DISABLED: configure approval.allowTruncatedApproval=true only if your deployment provides a full-draft review path.'
+      ]
+    : [];
+
+  const lines = [
+    draft.type === 'email' ? '📧 New Email Draft' : '🪝 New Webhook Draft',
+    '',
+    fromLine,
+    ignoredFromLine,
+    `To: ${to}`,
+    `Subject: ${payload.subject ?? '[n/a]'}`,
+    '',
+    '─────────────',
+    shownBody,
+    '─────────────',
+    ...warningLines,
+    '',
+    `Provider: ${options.providerName}`,
+    `Source: ${draft.source}`,
+    `Context: ${draft.metadata.context || '[none]'}`,
+    `Priority: ${draft.metadata.priority || 'normal'}`
+  ].filter((line): line is string => line !== null);
+
+  return {
+    text: lines.join('\n'),
+    canApprove,
+    fullBodyChars: body.length,
+    shownBodyChars: Math.min(body.length, options.bodyPreviewChars)
+  };
+}
 
 export class AgentGateBot {
   private readonly bot: Bot;
-  private readonly callbackFileIndex = new Map<string, string>();
+  private readonly approvalIndex = new Map<string, ApprovalTokenRecord>();
+  private approvalPruneTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly config: AgentGateConfig,
@@ -24,13 +112,13 @@ export class AgentGateBot {
   }
 
   async start(): Promise<void> {
-    // Global error handler — don't crash on recoverable errors
+    this.startApprovalTokenPruner();
+
     this.bot.catch((err) => {
       // eslint-disable-next-line no-console
       console.error('[agent-gate] bot error:', err.message ?? err);
     });
 
-    // Handle /start — greet authorized users, reject everyone else
     this.bot.command('start', async (ctx) => {
       const fromId = ctx.from?.id;
       if (!fromId || !this.config.telegram.allowedUsers.includes(fromId)) {
@@ -42,17 +130,15 @@ export class AgentGateBot {
       await ctx.reply('agent-gate is active. Draft approvals will appear here. Only authorized users can approve or deny.');
     });
 
-    // Block ALL other messages from unauthorized users
     this.bot.use(async (ctx, next) => {
       const fromId = ctx.from?.id;
       if (!fromId || !this.config.telegram.allowedUsers.includes(fromId)) {
-        // Silent drop — don't even acknowledge
         return;
       }
       await next();
     });
 
-    this.bot.callbackQuery(/^(approve|deny):([a-f0-9]{16})(?::([a-f0-9]{16}))?$/, async (ctx) => {
+    this.bot.callbackQuery(/^(approve|deny):([a-f0-9]{32})$/, async (ctx) => {
       const fromId = ctx.from?.id;
       if (!fromId || !this.config.telegram.allowedUsers.includes(fromId)) {
         await ctx.answerCallbackQuery({ text: 'Not authorized', show_alert: true });
@@ -61,16 +147,22 @@ export class AgentGateBot {
 
       const action = ctx.match[1];
       const callbackToken = ctx.match[2];
-      const expectedHash = ctx.match[3];
-      const fileName = await this.resolvePendingFileName(callbackToken);
-      if (!fileName) {
-        await ctx.answerCallbackQuery({ text: '⚠️ Draft expired or already processed', show_alert: true });
+      this.pruneExpiredApprovalTokens();
+      const record = this.approvalIndex.get(callbackToken);
+      if (!record || Date.now() > record.expiresAt) {
+        if (record) this.approvalIndex.delete(callbackToken);
+        await ctx.answerCallbackQuery({ text: '⚠️ Draft expired, restart detected, or already processed', show_alert: true });
         await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
         return;
       }
-      const approvedPath = resolve(this.draftsRoot, 'approved', fileName);
-      const deniedPath = resolve(this.draftsRoot, 'denied', fileName);
-      const pendingPath = resolve(this.draftsRoot, 'pending', fileName);
+
+      // Claim this approval token synchronously before any await. This makes
+      // concurrent approve/deny callbacks single-use in this process.
+      this.approvalIndex.delete(callbackToken);
+
+      const approvedPath = resolve(this.draftsRoot, 'approved', record.fileName);
+      const deniedPath = resolve(this.draftsRoot, 'denied', record.fileName);
+      const pendingPath = resolve(this.draftsRoot, 'pending', record.fileName);
 
       let raw: string;
       try {
@@ -78,25 +170,21 @@ export class AgentGateBot {
       } catch {
         await ctx.answerCallbackQuery({ text: '⚠️ Draft expired or already processed', show_alert: true });
         await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+        this.approvalIndex.delete(callbackToken);
         return;
       }
 
       if (action === 'approve') {
-        if (!expectedHash) {
-          await ctx.answerCallbackQuery({ text: '⚠️ Missing draft hash. Re-open draft.', show_alert: true });
-          return;
-        }
-
-        const actualHash = sha256short(raw);
-        if (actualHash !== expectedHash) {
+        const actualHash = sha256hex(raw);
+        if (actualHash !== record.hash) {
           await ctx.answerCallbackQuery({ text: '⚠️ Draft changed since preview. Approval rejected.', show_alert: true });
           await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          this.approvalIndex.delete(callbackToken);
           return;
         }
       }
 
       const draft = DraftSchema.parse(JSON.parse(raw));
-
       const originalText = ctx.callbackQuery.message?.text ?? '';
       const timestamp = new Date().toLocaleString('en-US', { timeZone: this.config.defaults.timezone, hour: 'numeric', minute: '2-digit', hour12: true });
 
@@ -110,14 +198,16 @@ export class AgentGateBot {
           }
         });
 
-        await writeFile(pendingPath, JSON.stringify(approvedDraft, null, 2), 'utf8');
-        await rename(pendingPath, approvedPath);
+        try {
+          await writeFile(pendingPath, JSON.stringify(approvedDraft, null, 2), 'utf8');
+          await rename(pendingPath, approvedPath);
+        } catch {
+          await ctx.answerCallbackQuery({ text: '⚠️ Draft already processed by another approver', show_alert: true });
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          return;
+        }
+        await ctx.editMessageText(`${originalText}\n\n✅ APPROVED at ${timestamp}`).catch(() => {});
 
-        // Edit original message to show approved status
-        const statusLine = `\n\n✅ APPROVED at ${timestamp}`;
-        await ctx.editMessageText(originalText + statusLine).catch(() => {});
-
-        // Execute and report result
         try {
           await this.executor.executeApprovedDraft(approvedPath);
           await ctx.answerCallbackQuery({ text: '✅ Sent successfully!' });
@@ -141,10 +231,8 @@ export class AgentGateBot {
 
         await writeFile(pendingPath, JSON.stringify(deniedDraft, null, 2), 'utf8');
         await rename(pendingPath, deniedPath);
-
-        // Edit original message to show denied status
-        const statusLine = `\n\n❌ DENIED at ${timestamp}`;
-        await ctx.editMessageText(originalText + statusLine).catch(() => {});
+        this.approvalIndex.delete(callbackToken);
+        await ctx.editMessageText(`${originalText}\n\n❌ DENIED at ${timestamp}`).catch(() => {});
         await ctx.answerCallbackQuery({ text: '❌ Draft denied' });
         return;
       }
@@ -162,84 +250,63 @@ export class AgentGateBot {
     });
   }
 
-  /** Long-running polling — call without await or handle the promise separately */
   async poll(): Promise<void> {
     await this.bot.start();
   }
 
   async stop(): Promise<void> {
+    if (this.approvalPruneTimer) {
+      clearInterval(this.approvalPruneTimer);
+      this.approvalPruneTimer = null;
+    }
     await this.bot.stop();
   }
 
-  private async sendDraftForApproval(draft: Draft, fileName: string): Promise<void> {
-    const payload = draft.payload as {
-      from?: string;
-      to?: string | string[];
-      subject?: string;
-      body?: string;
-    };
+  private startApprovalTokenPruner(): void {
+    if (this.approvalPruneTimer) return;
+    this.approvalPruneTimer = setInterval(() => this.pruneExpiredApprovalTokens(), 60 * 60 * 1000);
+    this.approvalPruneTimer.unref?.();
+  }
 
-    const draftPath = resolve(this.draftsRoot, 'pending', fileName);
-    const draftRaw = await readFile(draftPath, 'utf8');
-    const draftHash = sha256short(draftRaw);
-
-    const bodyPreview = payload.body ? preview(payload.body) : '[no body]';
-    const to = Array.isArray(payload.to) ? payload.to.join(', ') : (payload.to ?? '[none]');
-
-    const text = [
-      draft.type === 'email' ? '📧 New Email Draft' : '🪝 New Webhook Draft',
-      '',
-      `From: ${payload.from ?? '[n/a]'}`,
-      `To: ${to}`,
-      `Subject: ${payload.subject ?? '[n/a]'}`,
-      '',
-      '─────────────',
-      preview(bodyPreview, 700),
-      '─────────────',
-      '',
-      `Source: ${draft.source}`,
-      `Context: ${draft.metadata.context || '[none]'}`,
-      `Priority: ${draft.metadata.priority || 'normal'}`
-    ].join('\n');
-
-    const callbackToken = sha256short(fileName);
-    this.callbackFileIndex.set(callbackToken, fileName);
-    const keyboard = new InlineKeyboard()
-      .text('✅ Approve', `approve:${callbackToken}:${draftHash}`)
-      .text('❌ Deny', `deny:${callbackToken}`);
-
-    for (const userId of this.config.telegram.allowedUsers) {
-      await this.bot.api.sendMessage(userId, text, {
-        reply_markup: keyboard
-      });
+  private pruneExpiredApprovalTokens(now = Date.now()): void {
+    for (const [callbackToken, record] of this.approvalIndex.entries()) {
+      if (record.expiresAt <= now) {
+        this.approvalIndex.delete(callbackToken);
+      }
     }
   }
 
-  private async resolvePendingFileName(callbackToken: string): Promise<string | null> {
-    const knownFile = this.callbackFileIndex.get(callbackToken);
-    if (knownFile) {
-      return knownFile;
-    }
+  private async sendDraftForApproval(draft: Draft, fileName: string): Promise<void> {
+    const draftPath = resolve(this.draftsRoot, 'pending', fileName);
+    const draftRaw = await readFile(draftPath, 'utf8');
+    const token = createApprovalToken(fileName, draftRaw);
+    this.approvalIndex.set(token.callbackToken, token);
 
-    const pendingDir = resolve(this.draftsRoot, 'pending');
-    let entries: string[];
-    try {
-      entries = await readdir(pendingDir);
-    } catch {
-      return null;
-    }
+    const providerName = draft.provider || this.config.defaults.provider;
+    const previewResult = buildApprovalPreview(draft, {
+      configuredSender: this.executor.describeProviderSender(providerName),
+      providerName,
+      bodyPreviewChars: this.config.approval.bodyPreviewChars,
+      allowTruncatedApproval: this.config.approval.allowTruncatedApproval
+    });
 
-    for (const entry of entries) {
-      if (!entry.endsWith('.json')) {
-        continue;
+    const keyboard = new InlineKeyboard();
+    if (previewResult.canApprove) {
+      keyboard.text('✅ Approve', `approve:${token.callbackToken}`);
+    }
+    keyboard.text('❌ Deny', `deny:${token.callbackToken}`);
+
+    const sendResults = await Promise.allSettled(
+      this.config.telegram.allowedUsers.map((userId) =>
+        this.bot.api.sendMessage(userId, previewResult.text, { reply_markup: keyboard })
+      )
+    );
+
+    sendResults.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        // eslint-disable-next-line no-console
+        console.error(`[agent-gate] failed to send approval preview to ${this.config.telegram.allowedUsers[index]}:`, result.reason);
       }
-      const token = sha256short(entry);
-      this.callbackFileIndex.set(token, entry);
-      if (token === callbackToken) {
-        return entry;
-      }
-    }
-
-    return null;
+    });
   }
 }

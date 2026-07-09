@@ -55,7 +55,9 @@ DRAFT_JSON=$(cat <<EOF
 EOF
 )
 
-sg agentgate-inbox -c "cat > /opt/agent-gate/drafts/inbox/$FILENAME << 'AGENTGATE_DRAFT'
+INBOX="${AGENT_GATE_INBOX:-/opt/agent-gate/drafts/inbox}"
+
+sg agentgate-inbox -c "cat > '$INBOX/$FILENAME' << 'AGENTGATE_DRAFT'
 $DRAFT_JSON
 AGENTGATE_DRAFT"
 

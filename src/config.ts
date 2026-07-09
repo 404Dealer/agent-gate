@@ -14,21 +14,51 @@ const WatchConfigSchema = z.object({
   pollIntervalMs: z.number().int().positive().default(2000)
 });
 
+const ApprovalConfigSchema = z.object({
+  bodyPreviewChars: z.number().int().positive().max(12000).default(2000),
+  allowTruncatedApproval: z.boolean().default(false)
+}).default({});
+
+const SecurityConfigSchema = z.object({
+  enforceProductionPermissions: z.boolean().default(false)
+}).default({});
+
 const ProviderSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('log-only') }),
+  z.object({ type: z.literal('log-only'), fromAddress: z.string().email().optional() }),
+  z.object({
+    type: z.literal('email-gmail'),
+    clientId: z.string().min(1),
+    clientSecret: z.string().min(1),
+    refreshToken: z.string().min(1),
+    fromAddress: z.string().email(),
+    displayName: z.string().optional()
+  }),
   z.object({
     type: z.literal('email-zoho'),
     clientId: z.string().min(1),
     clientSecret: z.string().min(1),
     refreshToken: z.string().min(1),
     accountId: z.string().min(1),
-    fromAddress: z.string().email()
+    fromAddress: z.string().email(),
+    displayName: z.string().optional()
+  }),
+  z.object({
+    type: z.literal('email-outlook'),
+    clientId: z.string().min(1),
+    clientSecret: z.string().min(1),
+    refreshToken: z.string().min(1),
+    tenantId: z.string().min(1).default('common'),
+    userId: z.string().min(1).optional(),
+    fromAddress: z.string().email(),
+    displayName: z.string().optional()
   })
 ]);
 
 const ConfigSchema = z.object({
   telegram: TelegramConfigSchema,
   watch: WatchConfigSchema,
+  approval: ApprovalConfigSchema,
+  security: SecurityConfigSchema,
   providers: z.record(ProviderSchema),
   defaults: z.object({
     provider: z.string().min(1),

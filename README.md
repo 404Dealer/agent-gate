@@ -34,14 +34,46 @@ agent-gate enforces a **structural** control plane that no amount of prompt inje
 3. You tap **Approve** or **Deny**.
 4. If approved, a deterministic script executes exactly what you reviewed — no AI involved.
 
+## Requirements for the Security Model to Hold
+
+agent-gate is only a **hard security boundary** when these requirements are true:
+
+| Requirement | Why it matters |
+|-------------|----------------|
+| agent-gate runs as a separate OS user | Prevents the AI agent process from reading/modifying pending or approved drafts |
+| The agent has write-only access to the inbox | The agent can propose drafts but cannot list, read, edit, delete, or replace drafts after submission |
+| Send credentials live only in agent-gate | If the agent also has SMTP/Gmail/Zoho send credentials, it can bypass the gate |
+| The approval bot token is not available to the agent | Prevents the agent from approving its own drafts |
+| `security.enforceProductionPermissions: true` in production | Fails closed if the write-only inbox/private state directories are misconfigured |
+| Humans review the actual outbound payload | The approval decision is about the concrete email/webhook body, recipients, provider, and context |
+
+If you run agent-gate and your agent as the same Unix user, or give the agent direct send credentials, agent-gate is still useful as an approval workflow — but it is **not** a structural security boundary.
+
+See [docs/deployment.md](docs/deployment.md) for the production filesystem setup, [docs/hermes.md](docs/hermes.md) for Hermes-specific integration, and [docs/credential-handoff.md](docs/credential-handoff.md) for the operator responsibilities and secret handoff flow.
+
+## How This Differs from Hermes Built-In Approval
+
+Hermes Agent already has useful approval controls for tool and command risk. agent-gate is complementary, not a replacement.
+
+| Capability | Hermes built-in approval | agent-gate |
+|------------|--------------------------|------------|
+| Primary approval target | Tool calls / shell commands | Exact outbound payloads |
+| Typical question | “Should this command/tool run?” | “Should this exact email/webhook be sent?” |
+| Final executor | Hermes tool runtime | Separate deterministic service |
+| Send credentials | May live in Hermes if configured | Live only in agent-gate |
+| Best for | Dangerous local commands, tool use, operational actions | Email, replies, webhooks, API calls, external side effects |
+| Security shape | Tool-level/behavioral approval | Payload-level structural boundary |
+
+For example, Hermes approval can help decide whether a risky command should run. agent-gate is for a different problem: Hermes drafts an email, but a separate process with separate credentials sends only the exact payload a human approved.
+
 ## Security Model
 
 This isn't "we told the AI to be careful." It's structural:
 
 - **Process isolation** — agent-gate runs as a separate OS user. The AI agent cannot read, modify, or delete drafts after submission.
 - **Write-only inbox** — the agent can drop files in but cannot read or list the directory (Unix dropbox permissions: `1730`).
-- **Hash-verified approvals** — SHA-256 hash is computed at preview time and embedded in the approve button. If the draft is modified between preview and approval, the approval is rejected.
-- **From-address enforcement** — the `from` field in drafts is ignored. The configured sender address is always used. Prevents spoofing.
+- **Hash-verified approvals** — a full SHA-256 hash is computed at preview time and bound to an unguessable approval nonce. If the draft is modified between preview and approval, the approval is rejected.
+- **From-address enforcement** — the `from` field in drafts is ignored. The approval preview shows the configured sender address and labels the draft `from` as ignored, preventing approval-screen spoofing.
 - **No AI in execution** — the executor reads the approved file directly. No LLM processes, summarizes, or touches the content.
 - **Out-of-band approval** — the Telegram bot has its own token and runs independently. The AI agent has no access to it.
 - **Schema validation** — [Zod](https://zod.dev) schemas enforce bounds on all fields (subject: 500 chars, body: 256KB, tags: 20 max).
@@ -160,7 +192,31 @@ watch:
   directory: "./drafts/inbox"
   pollIntervalMs: 2000
 
+approval:
+  bodyPreviewChars: 2000        # Long bodies are truncated in Telegram previews
+  allowTruncatedApproval: false # Safer default: truncated drafts show Deny only
+
+security:
+  enforceProductionPermissions: false # Set true after applying docs/deployment.md
+
 providers:
+  gmail:
+    type: "email-gmail"
+    clientId: "${GOOGLE_CLIENT_ID}"
+    clientSecret: "${GOOGLE_CLIENT_SECRET}"
+    refreshToken: "${GOOGLE_REFRESH_TOKEN}"
+    fromAddress: "you@gmail.com"
+    displayName: "Your Name"
+
+  outlook:
+    type: "email-outlook"
+    clientId: "${MICROSOFT_CLIENT_ID}"
+    clientSecret: "${MICROSOFT_CLIENT_SECRET}"
+    refreshToken: "${MICROSOFT_REFRESH_TOKEN}"
+    tenantId: "common"
+    fromAddress: "you@outlook.com"
+    displayName: "Your Name"
+
   zoho:
     type: "email-zoho"
     clientId: "${ZOHO_CLIENT_ID}"
@@ -198,6 +254,32 @@ Config placeholders support two resolvers:
 ### `log-only`
 
 Dry-run provider. Logs the payload to stdout, sends nothing. Use for testing and development.
+
+### `email-gmail`
+
+Sends email via the [Gmail API](https://developers.google.com/gmail/api/reference/rest/v1/users.messages/send) using OAuth refresh token flow. The OAuth client needs the `https://www.googleapis.com/auth/gmail.send` scope.
+
+| Config Key | Description |
+|------------|-------------|
+| `clientId` | Google Cloud OAuth Desktop/Web client ID |
+| `clientSecret` | Google Cloud OAuth client secret |
+| `refreshToken` | OAuth refresh token with Gmail send scope |
+| `fromAddress` | Enforced sender address or configured Gmail send-as alias |
+| `displayName` | Optional display name shown in From header |
+
+### `email-outlook`
+
+Sends email via [Microsoft Graph sendMail](https://learn.microsoft.com/en-us/graph/api/user-sendmail) using Microsoft Entra OAuth refresh token flow. The OAuth app needs delegated `offline_access` and `Mail.Send` scopes.
+
+| Config Key | Description |
+|------------|-------------|
+| `clientId` | Microsoft Entra app/client ID |
+| `clientSecret` | Microsoft Entra client secret |
+| `refreshToken` | OAuth refresh token with `offline_access Mail.Send` |
+| `tenantId` | Tenant ID, or `common` for personal/multi-tenant auth |
+| `userId` | Optional mailbox/user id; omitted uses `/me/sendMail` |
+| `fromAddress` | Enforced sender address shown in approval preview |
+| `displayName` | Optional display name shown in approval preview |
 
 ### `email-zoho`
 
@@ -281,9 +363,11 @@ agent-gate/
 │   ├── executor.ts       # Reads approved drafts, dispatches to providers
 │   ├── schema.ts         # Zod schemas + validation
 │   └── providers/
-│       ├── index.ts      # Provider registry
-│       ├── email-zoho.ts # Zoho Mail API
-│       └── log-only.ts   # Dry-run logger
+│       ├── index.ts       # Provider registry
+│       ├── email-gmail.ts  # Gmail API
+│       ├── email-outlook.ts # Microsoft Graph sendMail
+│       ├── email-zoho.ts   # Zoho Mail API
+│       └── log-only.ts    # Dry-run logger
 ├── drafts/               # Draft queue directories
 │   ├── inbox/            # Public dropbox (agents write here)
 │   ├── pending/          # Internal (watcher moves files here)
@@ -305,20 +389,22 @@ agent-gate/
 
 - ✅ File-based draft queue (inbox → pending → approved → sent)
 - ✅ Telegram bot with inline approve/deny buttons
-- ✅ SHA-256 hash-verified approvals
+- ✅ SHA-256 hash-verified approvals with nonce-bound callbacks
+- ✅ Gmail email provider
+- ✅ Outlook / Microsoft Graph email provider
 - ✅ Zoho Mail email provider
 - ✅ Log-only dry-run provider
 - ✅ `${PASS:key}` and `${ENV}` secret resolvers
 - ✅ Schema validation with size/count bounds
 - ✅ JSON audit logging
 - ✅ Symlink/device file rejection
-- ✅ From-address enforcement
-- ✅ Sanitized error handling
+- ✅ From-address enforcement in execution and approval preview
+- ✅ Safe long-body preview policy (truncated drafts deny-only by default)
+- ✅ Optional production permission checks at startup
 
 ### Planned
 
 - [ ] Edit flow — modify drafts in Telegram before approving
-- [ ] Gmail provider
 - [ ] Generic SMTP provider
 - [ ] Webhook provider (for non-email actions: Slack, Discord, APIs)
 - [ ] Bulk approve/deny
@@ -350,6 +436,19 @@ skill/
 The skill teaches an AI agent how to write properly-formatted draft files. The agent learns the schema, constraints, and workflow — then uses `sg agentgate-inbox` (or the helper script) to drop drafts into the inbox.
 
 Install the skill in your agent framework, point it at your agent-gate inbox, and your agent can propose emails that you approve via Telegram.
+
+## Hermes Agent Integration
+
+See [docs/hermes.md](docs/hermes.md) for a dedicated Hermes setup guide.
+
+agent-gate is intentionally designed as a Hermes-compatible outbound-action gate:
+
+1. Install this repo's `skill/` directory as a Hermes skill, or keep it in a project and load it for sessions that may draft email.
+2. Give Hermes write-only access to `/opt/agent-gate/drafts/inbox` through the `agentgate-inbox` group.
+3. Do **not** give Hermes the SMTP/API credentials that agent-gate uses to send. Hermes should read/search/draft; agent-gate should send.
+4. For a draft request, Hermes writes JSON only and then tells the user it is pending approval. The approved send happens outside the Hermes process.
+
+That separation is what makes the gate stronger than an agent asking, “Should I send this?” and then calling a send tool itself.
 
 ## Contributing
 

@@ -4,11 +4,26 @@ This guide walks through deploying agent-gate with full process isolation. By th
 
 ## Overview
 
-| Component | Runs As | Can Do |
-|-----------|---------|--------|
-| AI Agent | `your-user` | Write files to inbox (only) |
-| agent-gate | `agentgate` | Read inbox, send previews, execute approved drafts |
-| Telegram Bot | (part of agent-gate) | Receive approve/deny from authorized humans |
+Production deployment has one goal: the agent can submit drafts, but cannot approve, alter, inspect, or send them.
+
+### Minimum Production Requirements
+
+- Separate Unix service user for agent-gate, for example `agentgate`.
+- Dedicated inbox group, for example `agentgate-inbox`.
+- Inbox mode `1730`, owned by `agentgate:agentgate-inbox`.
+- Internal state directories (`pending`, `approved`, `sent`, `denied`, `failed`) mode `0700`, owned by `agentgate:agentgate`.
+- Provider send credentials readable only by `agentgate`.
+- Telegram approval bot token readable only by `agentgate`.
+- Agent/Hermes user added only to `agentgate-inbox`, **not** to the `agentgate` group.
+- `security.enforceProductionPermissions: true` in config.
+
+If any of these are skipped, agent-gate may still work, but it is no longer enforcing the full structural boundary.
+
+| Component | Runs As | Can Do | Must Not Be Able To Do |
+|-----------|---------|--------|-------------------------|
+| AI Agent / Hermes | `your-user` | Write files to inbox only | Read/list inbox, read pending/approved/sent, access send credentials, access approval bot token |
+| agent-gate | `agentgate` | Read inbox, send previews, execute approved drafts | Run arbitrary agent code |
+| Telegram Bot | part of `agentgate` service | Receive approve/deny from authorized humans | Expose token to the agent |
 
 ## Phase 1 — Create Service User
 
@@ -91,6 +106,8 @@ sudo setfacl -m u:your-user:r /opt/agent-gate/audit.log
 
 Use a dedicated `pass` store for the agentgate user. This keeps secrets out of environment variables and `/proc/environ`.
 
+Hermes can help prepare the `agentgate` user and password store, but the human operator should enter provider send credentials from a terminal/SSH session that Hermes is not controlling.
+
 ```bash
 # Generate GPG key for agentgate
 sudo -u agentgate bash -c '
@@ -110,14 +127,23 @@ EOF
 # Initialize pass store
 AGENTGATE_GPG_FPR=$(sudo -u agentgate gpg --list-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')
 sudo -u agentgate bash -c "pass init $AGENTGATE_GPG_FPR"
-
-# Insert your secrets
-echo "your-bot-token" | sudo -u agentgate pass insert -e agent-gate/telegram-bot-token
-echo "your-client-id" | sudo -u agentgate pass insert -e agent-gate/zoho-client-id
-# ... etc
 ```
 
-Then reference them in config with `${PASS:agent-gate/telegram-bot-token}` syntax.
+Then run the human-only secret handoff helper from your own terminal:
+
+```bash
+# Do not run this through a Hermes conversation if Hermes must not see send creds.
+sudo scripts/configure-provider-secrets.sh telegram
+sudo scripts/configure-provider-secrets.sh gmail
+# or
+sudo scripts/configure-provider-secrets.sh outlook
+# or
+sudo scripts/configure-provider-secrets.sh zoho
+```
+
+The helper prompts for credentials and stores them under the `agentgate` user's `pass` store. Reference them in config with `${PASS:...}` syntax.
+
+See [credential-handoff.md](credential-handoff.md) for the operator responsibilities, Gmail/Zoho token pattern, and the future Outlook/Microsoft Graph pattern.
 
 ## Phase 4 — Production Config
 
@@ -132,6 +158,23 @@ watch:
   pollIntervalMs: 2000
 
 providers:
+  gmail:
+    type: "email-gmail"
+    clientId: "${PASS:agent-gate/google-client-id}"
+    clientSecret: "${PASS:agent-gate/google-client-secret}"
+    refreshToken: "${PASS:agent-gate/google-refresh-token}"
+    fromAddress: "you@gmail.com"
+    displayName: "Your Name"
+
+  outlook:
+    type: "email-outlook"
+    clientId: "${PASS:agent-gate/microsoft-client-id}"
+    clientSecret: "${PASS:agent-gate/microsoft-client-secret}"
+    refreshToken: "${PASS:agent-gate/microsoft-refresh-token}"
+    tenantId: "${PASS:agent-gate/microsoft-tenant-id}"
+    fromAddress: "you@outlook.com"
+    displayName: "Your Name"
+
   zoho:
     type: "email-zoho"
     clientId: "${PASS:agent-gate/zoho-client-id}"
@@ -144,9 +187,16 @@ providers:
     type: "log-only"
 
 defaults:
-  provider: "zoho"
+  provider: "gmail"
   timezone: "America/Chicago"
   autoDeleteAfterDays: 30
+
+approval:
+  bodyPreviewChars: 2000
+  allowTruncatedApproval: false
+
+security:
+  enforceProductionPermissions: true
 
 audit:
   enabled: true
@@ -216,7 +266,14 @@ sudo systemctl start agent-gate
 Verify it's running:
 
 ```bash
+sudo systemctl status agent-gate --no-pager
 sudo journalctl -u agent-gate -f
+```
+
+With `security.enforceProductionPermissions: true`, startup fails closed if the draft directories do not match the production isolation model. A healthy startup logs:
+
+```text
+✅ Draft directory isolation checks passed.
 ```
 
 ## Phase 6 — Restrict Your Agent's sudo (Optional)

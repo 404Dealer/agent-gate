@@ -6,7 +6,34 @@ watch:
   directory: "./drafts/inbox"
   pollIntervalMs: 2000
 
+# Approval preview policy. By default, long/truncated bodies cannot be approved
+# from Telegram until you provide a full-review path or opt in explicitly.
+approval:
+  bodyPreviewChars: 2000
+  allowTruncatedApproval: false
+
+# Set true in production after applying docs/deployment.md permissions.
+security:
+  enforceProductionPermissions: false
+
 providers:
+  gmail:
+    type: "email-gmail"
+    clientId: "${GOOGLE_CLIENT_ID}"
+    clientSecret: "${GOOGLE_CLIENT_SECRET}"
+    refreshToken: "${GOOGLE_REFRESH_TOKEN}"
+    fromAddress: "you@gmail.com"
+    displayName: "Your Name"
+
+  outlook:
+    type: "email-outlook"
+    clientId: "${MICROSOFT_CLIENT_ID}"
+    clientSecret: "${MICROSOFT_CLIENT_SECRET}"
+    refreshToken: "${MICROSOFT_REFRESH_TOKEN}"
+    tenantId: "common"
+    fromAddress: "you@outlook.com"
+    displayName: "Your Name"
+
   zoho:
     type: "email-zoho"
     clientId: "${ZOHO_CLIENT_ID}"
