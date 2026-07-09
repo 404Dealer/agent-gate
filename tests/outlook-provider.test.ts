@@ -94,7 +94,9 @@ test('outlook provider refreshes OAuth token and sends a Graph sendMail payload'
     assert.equal(result.details, 'Email sent via Outlook / Microsoft Graph');
     assert.equal(calls.length, 2);
     assert.equal(calls[0].url, 'https://login.microsoftonline.com/common/oauth2/v2.0/token');
+    assert(calls[0].init?.signal instanceof AbortSignal);
     assert.equal(calls[1].url, 'https://graph.microsoft.com/v1.0/me/sendMail');
+    assert(calls[1].init?.signal instanceof AbortSignal);
     assert.equal((calls[1].init?.headers as Record<string, string>).Authorization, 'Bearer access-token');
 
     const tokenBody = calls[0].init?.body as URLSearchParams;
@@ -121,6 +123,27 @@ test('outlook provider refreshes OAuth token and sends a Graph sendMail payload'
     assert.deepEqual(sendBody.message.replyTo, [{ emailAddress: { address: 'reply@example.com' } }]);
     assert.equal(sendBody.saveToSentItems, true);
     assert.doesNotMatch(String(calls[1].init?.body), /ignored@example\.com/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('outlook provider rejects token responses without an access token', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ token_type: 'Bearer' }), { status: 200, headers: { 'Content-Type': 'application/json' } })) as typeof fetch;
+
+  try {
+    const provider = new OutlookEmailProvider({
+      type: 'email-outlook',
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      refreshToken: 'refresh-token',
+      tenantId: 'common',
+      fromAddress: 'sender@outlook.com'
+    });
+
+    await assert.rejects(() => provider.send(sampleDraft()), /Outlook token refresh succeeded but no access_token was returned/);
   } finally {
     globalThis.fetch = originalFetch;
   }

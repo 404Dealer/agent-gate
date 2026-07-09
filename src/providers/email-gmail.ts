@@ -3,13 +3,15 @@ import type { Draft } from '../schema.js';
 import type { Provider, ProviderResult } from './index.js';
 
 interface GmailTokenResponse {
-  access_token: string;
+  access_token?: string;
 }
 
 interface GmailSendResponse {
   id?: string;
   threadId?: string;
 }
+
+const PROVIDER_FETCH_TIMEOUT_MS = 30_000;
 
 const statusMessage = (prefix: string, status: number, statusText: string): string =>
   `${prefix}: ${status} ${statusText || 'Unknown error'}`;
@@ -50,7 +52,8 @@ export class GmailEmailProvider implements Provider {
     const response = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body
+      body,
+      signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS)
     });
 
     if (!response.ok) {
@@ -58,7 +61,11 @@ export class GmailEmailProvider implements Provider {
     }
 
     const token = (await response.json()) as GmailTokenResponse;
-    return token.access_token;
+    const accessToken = token.access_token;
+    if (!accessToken) {
+      throw new Error('Gmail token refresh succeeded but no access_token was returned');
+    }
+    return accessToken;
   }
 
   private buildRawMessage(draft: Draft): string {
@@ -98,7 +105,8 @@ export class GmailEmailProvider implements Provider {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ raw: base64url(this.buildRawMessage(draft)) })
+      body: JSON.stringify({ raw: base64url(this.buildRawMessage(draft)) }),
+      signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS)
     });
 
     if (!response.ok) {

@@ -55,7 +55,7 @@ Copy or symlink this repo's `skill/` directory into Hermes:
 
 ```bash
 mkdir -p ~/.hermes/skills/security
-ln -s /opt/agent-gate/skill ~/.hermes/skills/security/agent-gate
+ln -sfn /opt/agent-gate/skill ~/.hermes/skills/security/agent-gate
 ```
 
 Start a new Hermes session or `/reset` so the skill is discoverable.
