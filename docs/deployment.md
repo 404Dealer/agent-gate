@@ -106,6 +106,8 @@ sudo setfacl -m u:your-user:r /opt/agent-gate/audit.log
 
 Use a dedicated `pass` store for the agentgate user. This keeps secrets out of environment variables and `/proc/environ`.
 
+Hermes can help prepare the `agentgate` user and password store, but the human operator should enter provider send credentials from a terminal/SSH session that Hermes is not controlling.
+
 ```bash
 # Generate GPG key for agentgate
 sudo -u agentgate bash -c '
@@ -125,22 +127,21 @@ EOF
 # Initialize pass store
 AGENTGATE_GPG_FPR=$(sudo -u agentgate gpg --list-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')
 sudo -u agentgate bash -c "pass init $AGENTGATE_GPG_FPR"
-
-# Insert your secrets
-# Required for every deployment:
-echo "your-bot-token" | sudo -u agentgate pass insert -e agent-gate/telegram-bot-token
-
-# Gmail provider secrets, if using email-gmail:
-echo "your-google-client-id" | sudo -u agentgate pass insert -e agent-gate/google-client-id
-echo "your-google-client-secret" | sudo -u agentgate pass insert -e agent-gate/google-client-secret
-echo "your-google-refresh-token" | sudo -u agentgate pass insert -e agent-gate/google-refresh-token
-
-# Zoho provider secrets, if using email-zoho:
-echo "your-zoho-client-id" | sudo -u agentgate pass insert -e agent-gate/zoho-client-id
-# ... etc
 ```
 
-Then reference them in config with `${PASS:agent-gate/telegram-bot-token}` syntax.
+Then run the human-only secret handoff helper from your own terminal:
+
+```bash
+# Do not run this through a Hermes conversation if Hermes must not see send creds.
+sudo scripts/configure-provider-secrets.sh telegram
+sudo scripts/configure-provider-secrets.sh gmail
+# or
+sudo scripts/configure-provider-secrets.sh zoho
+```
+
+The helper prompts for credentials and stores them under the `agentgate` user's `pass` store. Reference them in config with `${PASS:...}` syntax.
+
+See [credential-handoff.md](credential-handoff.md) for the operator responsibilities, Gmail/Zoho token pattern, and the future Outlook/Microsoft Graph pattern.
 
 ## Phase 4 — Production Config
 

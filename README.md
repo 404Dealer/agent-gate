@@ -49,7 +49,7 @@ agent-gate is only a **hard security boundary** when these requirements are true
 
 If you run agent-gate and your agent as the same Unix user, or give the agent direct send credentials, agent-gate is still useful as an approval workflow — but it is **not** a structural security boundary.
 
-See [docs/deployment.md](docs/deployment.md) for the production filesystem setup and [docs/hermes.md](docs/hermes.md) for Hermes-specific integration.
+See [docs/deployment.md](docs/deployment.md) for the production filesystem setup, [docs/hermes.md](docs/hermes.md) for Hermes-specific integration, and [docs/credential-handoff.md](docs/credential-handoff.md) for the operator responsibilities and secret handoff flow.
 
 ## How This Differs from Hermes Built-In Approval
 

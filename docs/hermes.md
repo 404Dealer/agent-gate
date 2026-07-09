@@ -60,6 +60,34 @@ ln -s /opt/agent-gate/skill ~/.hermes/skills/security/agent-gate
 
 Start a new Hermes session or `/reset` so the skill is discoverable.
 
+## Hermes-Assisted Install Without Sharing Send Credentials
+
+A secure install should be split into two parts:
+
+1. **Hermes-assisted infrastructure setup** — Hermes can clone the repo, run tests/build, run `scripts/install-production.sh`, set non-secret config values, and verify systemd health.
+2. **Human-only secret handoff** — the operator runs `scripts/configure-provider-secrets.sh` from their own terminal or SSH session, outside the Hermes conversation.
+
+Example infrastructure command Hermes can help prepare or run after explicit sudo approval:
+
+```bash
+sudo scripts/install-production.sh \
+  --agent-user spacex \
+  --telegram-user-id 2061243435
+```
+
+Example secret handoff commands the operator should run personally:
+
+```bash
+sudo scripts/configure-provider-secrets.sh telegram
+sudo scripts/configure-provider-secrets.sh gmail
+# or
+sudo scripts/configure-provider-secrets.sh zoho
+```
+
+Do not paste Gmail/Zoho/Outlook refresh tokens, SMTP passwords, API keys, or the agent-gate approval bot token into Hermes. Hermes can verify that secret references exist, but it should not print or receive their values.
+
+See [credential-handoff.md](credential-handoff.md) for the detailed operator responsibilities and token patterns.
+
 ## Give Hermes Write-Only Inbox Access
 
 Production deployment creates:
