@@ -44,6 +44,10 @@ if [[ -z "$TELEGRAM_USER_ID" ]]; then
   echo "--telegram-user-id is required." >&2
   exit 2
 fi
+if [[ "$AGENT_USER" == "root" ]]; then
+  echo "--agent-user is required when running directly as root; refusing to configure root as the agent user." >&2
+  exit 2
+fi
 if ! id "$AGENT_USER" >/dev/null 2>&1; then
   echo "Agent user does not exist: $AGENT_USER" >&2
   exit 2
@@ -55,7 +59,14 @@ usermod -aG "$INBOX_GROUP" "$SERVICE_USER"
 usermod -aG "$INBOX_GROUP" "$AGENT_USER"
 
 mkdir -p "$INSTALL_DIR"/drafts/{inbox,pending,approved,sent,denied,failed}
-rsync -a --delete --exclude .git --exclude node_modules --exclude dist ./ "$INSTALL_DIR"/
+rsync -a --delete \
+  --exclude .git \
+  --exclude node_modules \
+  --exclude dist \
+  --exclude config.yaml \
+  --exclude audit.log \
+  --exclude drafts \
+  ./ "$INSTALL_DIR"/
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
 sudo -u "$SERVICE_USER" bash -lc "cd '$INSTALL_DIR' && npm ci && npm run build"
@@ -111,6 +122,12 @@ fi
 chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/config.yaml"
 chmod 600 "$INSTALL_DIR/config.yaml"
 
+NODE_BIN="$(command -v node || true)"
+if [[ -z "$NODE_BIN" ]]; then
+  echo "node executable not found on PATH." >&2
+  exit 1
+fi
+
 cat > /etc/systemd/system/agent-gate.service <<EOF
 [Unit]
 Description=agent-gate — Deterministic Approval Layer
@@ -122,7 +139,7 @@ Type=simple
 User=$SERVICE_USER
 Group=$SERVICE_USER
 WorkingDirectory=$INSTALL_DIR
-ExecStart=/usr/bin/node $INSTALL_DIR/dist/index.js
+ExecStart=$NODE_BIN $INSTALL_DIR/dist/index.js
 Environment=AGENT_GATE_CONFIG=$INSTALL_DIR/config.yaml
 Environment=PASSWORD_STORE_DIR=/home/$SERVICE_USER/.password-store
 Environment=GNUPGHOME=/home/$SERVICE_USER/.gnupg

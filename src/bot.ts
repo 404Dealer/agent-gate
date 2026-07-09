@@ -25,16 +25,19 @@ export interface ApprovalTokenRecord {
   callbackToken: string;
   fileName: string;
   hash: string;
+  expiresAt: number;
 }
 
+const APPROVAL_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const preview = (value: string, limit: number): string => (value.length > limit ? `${value.slice(0, limit)}...` : value);
 export const sha256hex = (value: string): string => createHash('sha256').update(value).digest('hex');
 
-export function createApprovalToken(fileName: string, rawDraft: string): ApprovalTokenRecord {
+export function createApprovalToken(fileName: string, rawDraft: string, ttlMs = APPROVAL_TOKEN_TTL_MS): ApprovalTokenRecord {
   return {
     callbackToken: randomBytes(16).toString('hex'),
     fileName,
-    hash: sha256hex(rawDraft)
+    hash: sha256hex(rawDraft),
+    expiresAt: Date.now() + ttlMs
   };
 }
 
@@ -97,6 +100,7 @@ export function buildApprovalPreview(draft: Draft, options: ApprovalPreviewOptio
 export class AgentGateBot {
   private readonly bot: Bot;
   private readonly approvalIndex = new Map<string, ApprovalTokenRecord>();
+  private approvalPruneTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly config: AgentGateConfig,
@@ -108,6 +112,8 @@ export class AgentGateBot {
   }
 
   async start(): Promise<void> {
+    this.startApprovalTokenPruner();
+
     this.bot.catch((err) => {
       // eslint-disable-next-line no-console
       console.error('[agent-gate] bot error:', err.message ?? err);
@@ -141,12 +147,18 @@ export class AgentGateBot {
 
       const action = ctx.match[1];
       const callbackToken = ctx.match[2];
+      this.pruneExpiredApprovalTokens();
       const record = this.approvalIndex.get(callbackToken);
-      if (!record) {
+      if (!record || Date.now() > record.expiresAt) {
+        if (record) this.approvalIndex.delete(callbackToken);
         await ctx.answerCallbackQuery({ text: '⚠️ Draft expired, restart detected, or already processed', show_alert: true });
         await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
         return;
       }
+
+      // Claim this approval token synchronously before any await. This makes
+      // concurrent approve/deny callbacks single-use in this process.
+      this.approvalIndex.delete(callbackToken);
 
       const approvedPath = resolve(this.draftsRoot, 'approved', record.fileName);
       const deniedPath = resolve(this.draftsRoot, 'denied', record.fileName);
@@ -186,9 +198,14 @@ export class AgentGateBot {
           }
         });
 
-        await writeFile(pendingPath, JSON.stringify(approvedDraft, null, 2), 'utf8');
-        await rename(pendingPath, approvedPath);
-        this.approvalIndex.delete(callbackToken);
+        try {
+          await writeFile(pendingPath, JSON.stringify(approvedDraft, null, 2), 'utf8');
+          await rename(pendingPath, approvedPath);
+        } catch {
+          await ctx.answerCallbackQuery({ text: '⚠️ Draft already processed by another approver', show_alert: true });
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+          return;
+        }
         await ctx.editMessageText(`${originalText}\n\n✅ APPROVED at ${timestamp}`).catch(() => {});
 
         try {
@@ -238,7 +255,25 @@ export class AgentGateBot {
   }
 
   async stop(): Promise<void> {
+    if (this.approvalPruneTimer) {
+      clearInterval(this.approvalPruneTimer);
+      this.approvalPruneTimer = null;
+    }
     await this.bot.stop();
+  }
+
+  private startApprovalTokenPruner(): void {
+    if (this.approvalPruneTimer) return;
+    this.approvalPruneTimer = setInterval(() => this.pruneExpiredApprovalTokens(), 60 * 60 * 1000);
+    this.approvalPruneTimer.unref?.();
+  }
+
+  private pruneExpiredApprovalTokens(now = Date.now()): void {
+    for (const [callbackToken, record] of this.approvalIndex.entries()) {
+      if (record.expiresAt <= now) {
+        this.approvalIndex.delete(callbackToken);
+      }
+    }
   }
 
   private async sendDraftForApproval(draft: Draft, fileName: string): Promise<void> {
@@ -261,10 +296,17 @@ export class AgentGateBot {
     }
     keyboard.text('❌ Deny', `deny:${token.callbackToken}`);
 
-    for (const userId of this.config.telegram.allowedUsers) {
-      await this.bot.api.sendMessage(userId, previewResult.text, {
-        reply_markup: keyboard
-      });
-    }
+    const sendResults = await Promise.allSettled(
+      this.config.telegram.allowedUsers.map((userId) =>
+        this.bot.api.sendMessage(userId, previewResult.text, { reply_markup: keyboard })
+      )
+    );
+
+    sendResults.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        // eslint-disable-next-line no-console
+        console.error(`[agent-gate] failed to send approval preview to ${this.config.telegram.allowedUsers[index]}:`, result.reason);
+      }
+    });
   }
 }

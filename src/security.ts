@@ -58,8 +58,8 @@ export async function verifyDraftDirectoryIsolation(input: IsolationCheckInput):
 
   try {
     const rootMode = await modeOf(root);
-    if ((rootMode & 0o002) !== 0) {
-      errors.push(`Draft root ${root} must not be world-writable; found ${oct(rootMode)}.`);
+    if ((rootMode & 0o022) !== 0) {
+      errors.push(`Draft root ${root} must not be group- or world-writable; found ${oct(rootMode)}.`);
     }
   } catch (err) {
     warnings.push(`Cannot stat draft root ${root}: ${err instanceof Error ? err.message : String(err)}`);
