@@ -117,15 +117,16 @@ As with Gmail, Hermes should not receive the Zoho send refresh token or any app 
 
 ### Outlook / Microsoft 365
 
-Outlook/Microsoft Graph support follows the same security pattern, but the provider is not implemented in this repo yet.
+Supported provider type: `email-outlook`.
 
-Recommended future send scope:
+Required delegated scopes:
 
 ```text
+offline_access
 Mail.Send
 ```
 
-Recommended future storage keys:
+Recommended storage keys:
 
 ```text
 agent-gate/microsoft-client-id
@@ -134,7 +135,7 @@ agent-gate/microsoft-refresh-token
 agent-gate/microsoft-tenant-id
 ```
 
-Once an `email-outlook` provider exists, the same rule applies: the refresh token that can send mail belongs only to `agentgate`, not Hermes.
+For Outlook, the same rule applies: the refresh token that can send mail belongs only to `agentgate`, not Hermes. The provider exchanges that refresh token for a short-lived Graph access token and calls `sendMail` only after human approval.
 
 ## How Hermes Can Install Nearly Everything Without Seeing Secrets
 

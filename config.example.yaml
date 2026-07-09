@@ -25,6 +25,15 @@ providers:
     fromAddress: "you@gmail.com"
     displayName: "Your Name"
 
+  outlook:
+    type: "email-outlook"
+    clientId: "${MICROSOFT_CLIENT_ID}"
+    clientSecret: "${MICROSOFT_CLIENT_SECRET}"
+    refreshToken: "${MICROSOFT_REFRESH_TOKEN}"
+    tenantId: "common"
+    fromAddress: "you@outlook.com"
+    displayName: "Your Name"
+
   zoho:
     type: "email-zoho"
     clientId: "${ZOHO_CLIENT_ID}"

@@ -136,6 +136,8 @@ Then run the human-only secret handoff helper from your own terminal:
 sudo scripts/configure-provider-secrets.sh telegram
 sudo scripts/configure-provider-secrets.sh gmail
 # or
+sudo scripts/configure-provider-secrets.sh outlook
+# or
 sudo scripts/configure-provider-secrets.sh zoho
 ```
 
@@ -162,6 +164,15 @@ providers:
     clientSecret: "${PASS:agent-gate/google-client-secret}"
     refreshToken: "${PASS:agent-gate/google-refresh-token}"
     fromAddress: "you@gmail.com"
+    displayName: "Your Name"
+
+  outlook:
+    type: "email-outlook"
+    clientId: "${PASS:agent-gate/microsoft-client-id}"
+    clientSecret: "${PASS:agent-gate/microsoft-client-secret}"
+    refreshToken: "${PASS:agent-gate/microsoft-refresh-token}"
+    tenantId: "${PASS:agent-gate/microsoft-tenant-id}"
+    fromAddress: "you@outlook.com"
     displayName: "Your Name"
 
   zoho:

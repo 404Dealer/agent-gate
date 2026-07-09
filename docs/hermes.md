@@ -81,6 +81,8 @@ Example secret handoff commands the operator should run personally:
 sudo scripts/configure-provider-secrets.sh telegram
 sudo scripts/configure-provider-secrets.sh gmail
 # or
+sudo scripts/configure-provider-secrets.sh outlook
+# or
 sudo scripts/configure-provider-secrets.sh zoho
 ```
 

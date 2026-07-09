@@ -41,6 +41,16 @@ const ProviderSchema = z.discriminatedUnion('type', [
     accountId: z.string().min(1),
     fromAddress: z.string().email(),
     displayName: z.string().optional()
+  }),
+  z.object({
+    type: z.literal('email-outlook'),
+    clientId: z.string().min(1),
+    clientSecret: z.string().min(1),
+    refreshToken: z.string().min(1),
+    tenantId: z.string().min(1).default('common'),
+    userId: z.string().min(1).optional(),
+    fromAddress: z.string().email(),
+    displayName: z.string().optional()
   })
 ]);
 

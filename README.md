@@ -208,6 +208,15 @@ providers:
     fromAddress: "you@gmail.com"
     displayName: "Your Name"
 
+  outlook:
+    type: "email-outlook"
+    clientId: "${MICROSOFT_CLIENT_ID}"
+    clientSecret: "${MICROSOFT_CLIENT_SECRET}"
+    refreshToken: "${MICROSOFT_REFRESH_TOKEN}"
+    tenantId: "common"
+    fromAddress: "you@outlook.com"
+    displayName: "Your Name"
+
   zoho:
     type: "email-zoho"
     clientId: "${ZOHO_CLIENT_ID}"
@@ -257,6 +266,20 @@ Sends email via the [Gmail API](https://developers.google.com/gmail/api/referenc
 | `refreshToken` | OAuth refresh token with Gmail send scope |
 | `fromAddress` | Enforced sender address or configured Gmail send-as alias |
 | `displayName` | Optional display name shown in From header |
+
+### `email-outlook`
+
+Sends email via [Microsoft Graph sendMail](https://learn.microsoft.com/en-us/graph/api/user-sendmail) using Microsoft Entra OAuth refresh token flow. The OAuth app needs delegated `offline_access` and `Mail.Send` scopes.
+
+| Config Key | Description |
+|------------|-------------|
+| `clientId` | Microsoft Entra app/client ID |
+| `clientSecret` | Microsoft Entra client secret |
+| `refreshToken` | OAuth refresh token with `offline_access Mail.Send` |
+| `tenantId` | Tenant ID, or `common` for personal/multi-tenant auth |
+| `userId` | Optional mailbox/user id; omitted uses `/me/sendMail` |
+| `fromAddress` | Enforced sender address shown in approval preview |
+| `displayName` | Optional display name shown in approval preview |
 
 ### `email-zoho`
 
@@ -341,8 +364,9 @@ agent-gate/
 │   ├── schema.ts         # Zod schemas + validation
 │   └── providers/
 │       ├── index.ts       # Provider registry
-│       ├── email-gmail.ts # Gmail API
-│       ├── email-zoho.ts  # Zoho Mail API
+│       ├── email-gmail.ts  # Gmail API
+│       ├── email-outlook.ts # Microsoft Graph sendMail
+│       ├── email-zoho.ts   # Zoho Mail API
 │       └── log-only.ts    # Dry-run logger
 ├── drafts/               # Draft queue directories
 │   ├── inbox/            # Public dropbox (agents write here)
@@ -367,6 +391,7 @@ agent-gate/
 - ✅ Telegram bot with inline approve/deny buttons
 - ✅ SHA-256 hash-verified approvals with nonce-bound callbacks
 - ✅ Gmail email provider
+- ✅ Outlook / Microsoft Graph email provider
 - ✅ Zoho Mail email provider
 - ✅ Log-only dry-run provider
 - ✅ `${PASS:key}` and `${ENV}` secret resolvers

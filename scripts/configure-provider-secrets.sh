@@ -11,6 +11,7 @@ Usage: sudo scripts/configure-provider-secrets.sh <provider>
 Providers:
   telegram Store agent-gate approval bot token
   gmail    Store Gmail OAuth send credentials for email-gmail
+  outlook  Store Microsoft Graph OAuth send credentials for email-outlook
   zoho     Store Zoho OAuth send credentials for email-zoho
 
 Run this from a human-controlled terminal or SSH session, not from a Hermes
@@ -90,6 +91,13 @@ case "$PROVIDER" in
     store_secret "google-client-id" "Google OAuth client ID"
     store_secret "google-client-secret" "Google OAuth client secret"
     store_secret "google-refresh-token" "Google OAuth refresh token with gmail.send scope"
+    ;;
+  outlook)
+    echo "Storing Outlook / Microsoft Graph OAuth send credentials. Required delegated scopes: offline_access Mail.Send"
+    store_secret "microsoft-client-id" "Microsoft Entra application/client ID"
+    store_secret "microsoft-client-secret" "Microsoft Entra client secret"
+    store_secret "microsoft-refresh-token" "Microsoft OAuth refresh token with offline_access Mail.Send"
+    store_secret "microsoft-tenant-id" "Microsoft tenant ID, or common for personal/multi-tenant auth"
     ;;
   zoho)
     echo "Storing Zoho OAuth send credentials."
