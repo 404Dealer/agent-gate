@@ -89,7 +89,7 @@ export async function exchangeGmailAuthorizationCode(
   });
 
   if (!response.ok) {
-    throw new Error(`Gmail OAuth token exchange failed: ${response.status} ${response.statusText || 'Unknown error'}`);
+    throw new Error(`Gmail OAuth token exchange failed: HTTP ${response.status}`);
   }
 
   let body: { access_token?: unknown; refresh_token?: unknown; scope?: unknown };
@@ -117,7 +117,7 @@ export async function fetchGmailIdentity(accessToken: string, fetchFn: typeof fe
     signal: AbortSignal.timeout(OAUTH_FETCH_TIMEOUT_MS)
   });
   if (!response.ok) {
-    throw new Error(`Gmail identity lookup failed: ${response.status} ${response.statusText || 'Unknown error'}`);
+    throw new Error(`Gmail identity lookup failed: HTTP ${response.status}`);
   }
 
   let body: { email?: unknown; email_verified?: unknown };

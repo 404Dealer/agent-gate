@@ -55,6 +55,13 @@ test('OAuth setup CLI accepts only non-secret options and makes device code Outl
   assert.throws(() => parseOAuthSetupArgs(['zoho', '--device-code']), /only valid for outlook/);
 });
 
+test('OAuth errors never reflect remote HTTP reason phrases', async () => {
+  for (const relativePath of ['../src/oauth/gmail.ts', '../src/oauth/outlook.ts', '../src/oauth/zoho.ts']) {
+    const source = await readFile(new URL(relativePath, import.meta.url), 'utf8');
+    assert.doesNotMatch(source, /response\.statusText/);
+  }
+});
+
 test('production installer validates canonical safe arguments without side effects', () => {
   const installerPath = fileURLToPath(new URL('../scripts/install-production.sh', import.meta.url));
   const validate = (functionName: string, value: string): number | null => spawnSync(

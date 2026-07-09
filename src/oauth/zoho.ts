@@ -155,7 +155,7 @@ export async function exchangeZohoAuthorizationCode(
   });
 
   if (!response.ok) {
-    throw new Error(`Zoho OAuth token exchange failed: ${response.status} ${response.statusText || 'Unknown error'}`);
+    throw new Error(`Zoho OAuth token exchange failed: HTTP ${response.status}`);
   }
   let body: { access_token?: unknown; refresh_token?: unknown; scope?: unknown };
   try {
@@ -257,7 +257,7 @@ export async function fetchZohoSenderChoices(
     signal: AbortSignal.timeout(OAUTH_FETCH_TIMEOUT_MS)
   });
   if (!response.ok) {
-    throw new Error(`Zoho account lookup failed: ${response.status} ${response.statusText || 'Unknown error'}`);
+    throw new Error(`Zoho account lookup failed: HTTP ${response.status}`);
   }
 
   let body: { data?: unknown };

@@ -97,7 +97,7 @@ export async function exchangeOutlookAuthorizationCode(
   });
 
   if (!response.ok) {
-    throw new Error(`Outlook OAuth token exchange failed: ${response.status} ${response.statusText || 'Unknown error'}`);
+    throw new Error(`Outlook OAuth token exchange failed: HTTP ${response.status}`);
   }
   let body: Record<string, unknown>;
   try {
@@ -143,7 +143,7 @@ export async function requestOutlookDeviceCode(
   });
 
   if (!response.ok) {
-    throw new Error(`Outlook device authorization failed: ${response.status} ${response.statusText || 'Unknown error'}`);
+    throw new Error(`Outlook device authorization failed: HTTP ${response.status}`);
   }
 
   let body: Record<string, unknown>;
@@ -261,7 +261,7 @@ export async function pollOutlookDeviceToken(
     if (body.error === 'expired_token' || body.error === 'bad_verification_code') {
       throw new Error('Outlook device code expired or was invalid; start again');
     }
-    throw new Error(`Outlook device token request failed: ${response.status} ${response.statusText || 'Unknown error'}`);
+    throw new Error(`Outlook device token request failed: HTTP ${response.status}`);
   }
 
   throw new Error('Outlook device code expired; start again');
@@ -279,7 +279,7 @@ export async function fetchOutlookIdentity(accessToken: string, fetchFn: typeof 
     signal: AbortSignal.timeout(OAUTH_FETCH_TIMEOUT_MS)
   });
   if (!response.ok) {
-    throw new Error(`Outlook identity lookup failed: ${response.status} ${response.statusText || 'Unknown error'}`);
+    throw new Error(`Outlook identity lookup failed: HTTP ${response.status}`);
   }
 
   let body: { mail?: unknown; userPrincipalName?: unknown; displayName?: unknown };
