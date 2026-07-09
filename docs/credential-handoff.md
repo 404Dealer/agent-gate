@@ -48,9 +48,15 @@ sudo scripts/install-production.sh \
 
 This creates users, groups, directories, permissions, a systemd service, and a config skeleton. It is okay for Hermes to assist with this because no send credentials need to be entered into Hermes.
 
-### Phase B — Human-only OAuth/secret handoff
+### Phase B — Human-only credential handoff
 
-For email providers, prefer the browser/device OAuth helper from a local terminal, SSH session, or console that is **not being driven by Hermes**:
+Store the separate approval-bot token first, because the OAuth helper restarts the service after a successful config commit:
+
+```bash
+sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
+```
+
+Then authorize an email provider from a local terminal, SSH session, or console that is **not being driven by Hermes**:
 
 ```bash
 sudo /opt/agent-gate/scripts/oauth-setup.sh gmail
@@ -60,13 +66,12 @@ sudo /opt/agent-gate/scripts/oauth-setup.sh outlook
 sudo /opt/agent-gate/scripts/oauth-setup.sh zoho
 ```
 
-The helper runs OAuth as `agentgate`, stores the resulting refresh token directly in that user's encrypted `pass` store, writes only `${PASS:...}` references into the private config, and restarts the service. See [oauth-onboarding.md](oauth-onboarding.md).
+The helper runs OAuth as `agentgate`, stores the resulting refresh token directly in that user's encrypted `pass` store, writes only versioned `${PASS:...}` references into the private config, and restarts the service. See [oauth-onboarding.md](oauth-onboarding.md).
 
-For the separate approval-bot token—or manual recovery when OAuth onboarding cannot be used—the operator can still run:
+For manual email recovery when OAuth onboarding cannot be used, the operator can run the installed fallback helper, for example:
 
 ```bash
-sudo scripts/configure-provider-secrets.sh telegram
-sudo scripts/configure-provider-secrets.sh gmail   # manual fallback
+sudo /opt/agent-gate/scripts/configure-provider-secrets.sh gmail
 ```
 
 Do **not** paste these values into a Hermes chat, Telegram DM with Hermes, issue comment, PR comment, or terminal command that Hermes is executing.

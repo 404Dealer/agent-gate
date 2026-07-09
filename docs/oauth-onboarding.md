@@ -33,8 +33,14 @@ The installer keeps the root-invoked scripts and their directory root-owned so t
 
 1. Install `agent-gate` in production mode.
 2. Initialize `/home/agentgate/.gnupg` and `/home/agentgate/.password-store`.
-3. Keep `defaults.provider: log` until onboarding and a controlled test succeed.
-4. Verify the installed helper:
+3. From a human-controlled terminal, store the dedicated approval-bot token first:
+
+```bash
+sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
+```
+
+4. Keep `defaults.provider: log` until onboarding and a controlled test succeed.
+5. Verify the installed helper:
 
 ```bash
 cd /opt/agent-gate

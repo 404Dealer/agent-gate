@@ -530,12 +530,23 @@ test('Zoho account lookup returns explicit confirmed sender choices', async () =
             { mailId: 'unconfirmed@example.eu', isPrimary: false, isConfirmed: false },
             { mailId: 'alias@example.eu', isPrimary: false, isConfirmed: true }
           ],
-          sendMailDetails: [{ fromAddress: 'sales@example.eu' }]
+          sendMailDetails: [
+            { fromAddress: 'sales@example.eu', isEnabled: true },
+            { fromAddress: 'disabled@example.eu', isEnabled: false },
+            { fromAddress: 'ambiguous@example.eu' }
+          ]
         },
         {
           accountId: '987654321',
           displayName: 'Second Account',
           primaryEmailAddress: 'second@example.eu'
+        },
+        {
+          accountId: '555555555',
+          displayName: 'Disabled Account',
+          accountStatus: 'inactive',
+          primaryEmailAddress: 'disabled-account@example.eu',
+          sendMailDetails: [{ fromAddress: 'disabled-sender@example.eu', isEnabled: true }]
         }
       ]
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });

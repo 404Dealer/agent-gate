@@ -51,7 +51,7 @@ sudo scripts/install-production.sh \
   --telegram-user-id YOUR_TELEGRAM_USER_ID
 ```
 
-The installer stops an already-active service during upgrades, installs lockfile dependencies with root lifecycle scripts disabled, compiles as the unprivileged `agentgate` account, and then makes the application code immutable to that account. This distinction is required: making only `scripts/` root-owned is insufficient when its parent directory is writable, because the parent owner could rename the entire scripts directory.
+The installer stops an already-active service during upgrades, installs lockfile dependencies with root lifecycle scripts disabled, compiles in a staged tree as a one-use unprivileged build account, verifies the output, and then atomically replaces the runtime. The persistent `agentgate` service account never owns source or privileged helpers.
 
 The only application-tree paths writable by `agentgate` are the dedicated config directory, draft state, and audit log. OAuth setup needs the config directory—not the application root—to be writable so it can atomically replace `config.yaml`.
 
@@ -117,7 +117,13 @@ sudo chown agentgate:agentgate /home/agentgate/.password-store/.gpg-id
 sudo chmod 0600 /home/agentgate/.password-store/.gpg-id
 ```
 
-For email providers, prefer direct PKCE browser OAuth from your own terminal:
+Store the separate approval-bot token first. The OAuth wrapper restarts the service after successful onboarding, so this bootstrap credential must already exist:
+
+```bash
+sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
+```
+
+Then authorize one email provider from your own terminal:
 
 ```bash
 # Do not run these through a Hermes conversation if Hermes must not see send credentials.
@@ -128,17 +134,13 @@ sudo /opt/agent-gate/scripts/oauth-setup.sh outlook
 sudo /opt/agent-gate/scripts/oauth-setup.sh zoho
 ```
 
-The OAuth helper runs as `agentgate` with a clean environment, stores refresh credentials directly in its `pass` store, verifies the authenticated sender/account, writes only `${PASS:...}` references to private config, and restarts the service. Gmail, Outlook, and Zoho use a loopback SSH tunnel by default; Outlook offers an explicit higher-risk `--device-code` fallback. See [oauth-onboarding.md](oauth-onboarding.md).
-
-Use the manual helper for the separate approval-bot token or as a recovery fallback:
-
-```bash
-sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
-```
+The OAuth helper runs as `agentgate` with a clean environment, stores refresh credentials directly in its `pass` store, verifies the authenticated sender/account, atomically writes only versioned `${PASS:...}` references to private config, and restarts the service. Gmail, Outlook, and Zoho use a loopback SSH tunnel by default; Outlook offers an explicit higher-risk `--device-code` fallback. See [oauth-onboarding.md](oauth-onboarding.md).
 
 See [credential-handoff.md](credential-handoff.md) for operator responsibilities and the hard boundary.
 
-## Phase 4 — Production Config
+## Phase 4 — Production Config (Manual Install Reference Only)
+
+> **If you used `scripts/install-production.sh`, skip this phase.** The installer created the private config and the OAuth helper updated it. Never replace `config.yaml` with this example after OAuth; doing so would discard the verified sender metadata and versioned pass references.
 
 ```bash
 sudo -u agentgate tee /opt/agent-gate/config/config.yaml > /dev/null << 'EOF'
@@ -201,7 +203,9 @@ EOF
 sudo chmod 600 /opt/agent-gate/config/config.yaml
 ```
 
-## Phase 5 — systemd Service
+## Phase 5 — systemd Service (Manual Install Reference Only)
+
+> **If you used the production installer, do not replace its hardened unit.** The installer already wrote the unit and the OAuth wrapper started/restarted it after onboarding. Use the commands below only for a fully manual installation.
 
 ```bash
 sudo tee /etc/systemd/system/agent-gate.service > /dev/null << 'EOF'

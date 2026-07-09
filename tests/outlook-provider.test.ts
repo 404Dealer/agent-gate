@@ -99,8 +99,10 @@ test('outlook provider refreshes OAuth token and sends a Graph sendMail payload'
     assert.equal(result.details, 'Email sent via Outlook / Microsoft Graph');
     assert.equal(calls.length, 2);
     assert.equal(calls[0].url, 'https://login.microsoftonline.com/common/oauth2/v2.0/token');
+    assert.equal(calls[0].init?.redirect, 'error');
     assert(calls[0].init?.signal instanceof AbortSignal);
     assert.equal(calls[1].url, 'https://graph.microsoft.com/v1.0/me/sendMail');
+    assert.equal(calls[1].init?.redirect, 'error');
     assert(calls[1].init?.signal instanceof AbortSignal);
     assert.equal((calls[1].init?.headers as Record<string, string>).Authorization, 'Bearer access-token');
 
@@ -257,6 +259,32 @@ test('outlook provider serializes concurrent refresh-token rotation', async () =
     }]);
   } finally {
     releaseTokenResponse?.();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('outlook provider redacts malformed token responses', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response('super-secret-refresh-token{', {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  })) as typeof fetch;
+
+  try {
+    const provider = new OutlookEmailProvider({
+      type: 'email-outlook',
+      clientId: 'client-id',
+      refreshToken: 'refresh-token',
+      tenantId: 'common',
+      fromAddress: 'sender@outlook.com'
+    });
+    await assert.rejects(() => provider.send(sampleDraft()), (error: unknown) => {
+      assert(error instanceof Error);
+      assert.match(error.message, /invalid JSON/);
+      assert.doesNotMatch(error.message, /super-secret/);
+      return true;
+    });
+  } finally {
     globalThis.fetch = originalFetch;
   }
 });

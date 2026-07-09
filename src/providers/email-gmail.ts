@@ -13,8 +13,7 @@ interface GmailSendResponse {
 
 const PROVIDER_FETCH_TIMEOUT_MS = 30_000;
 
-const statusMessage = (prefix: string, status: number, statusText: string): string =>
-  `${prefix}: ${status} ${statusText || 'Unknown error'}`;
+const statusMessage = (prefix: string, status: number): string => `${prefix}: HTTP ${status}`;
 
 const normalizeRecipients = (value: string | string[] | undefined): string => {
   if (!value) return '';
@@ -51,16 +50,22 @@ export class GmailEmailProvider implements Provider {
 
     const response = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
+      redirect: 'error',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body,
       signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS)
     });
 
     if (!response.ok) {
-      throw new Error(statusMessage('Gmail token refresh failed', response.status, response.statusText));
+      throw new Error(statusMessage('Gmail token refresh failed', response.status));
     }
 
-    const token = (await response.json()) as GmailTokenResponse;
+    let token: GmailTokenResponse;
+    try {
+      token = await response.json() as GmailTokenResponse;
+    } catch {
+      throw new Error('Gmail token refresh returned invalid JSON');
+    }
     const accessToken = token.access_token;
     if (!accessToken) {
       throw new Error('Gmail token refresh succeeded but no access_token was returned');
@@ -101,6 +106,7 @@ export class GmailEmailProvider implements Provider {
     const accessToken = await this.getAccessToken();
     const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
       method: 'POST',
+      redirect: 'error',
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json'
@@ -110,10 +116,15 @@ export class GmailEmailProvider implements Provider {
     });
 
     if (!response.ok) {
-      throw new Error(statusMessage('Gmail send failed', response.status, response.statusText));
+      throw new Error(statusMessage('Gmail send failed', response.status));
     }
 
-    const result = (await response.json()) as GmailSendResponse;
+    let result: GmailSendResponse;
+    try {
+      result = await response.json() as GmailSendResponse;
+    } catch {
+      throw new Error('Gmail send returned invalid JSON');
+    }
     return {
       providerMessageId: result.id,
       details: result.threadId ? `Email sent via Gmail in thread ${result.threadId}` : 'Email sent via Gmail'

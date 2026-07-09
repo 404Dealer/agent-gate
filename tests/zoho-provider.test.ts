@@ -57,9 +57,84 @@ test('zoho provider refreshes and sends only through the configured region', asy
     assert.equal(secondResult.providerMessageId, 'message-id');
     assert.equal(calls.length, 3);
     assert.equal(calls.filter((call) => call.url.includes('/oauth/v2/token')).length, 1);
+    assert.equal(calls[0].init?.redirect, 'error');
+    assert.equal(calls[1].init?.redirect, 'error');
+    assert.equal(calls[2].init?.redirect, 'error');
     assert(calls[0].init?.signal instanceof AbortSignal);
     assert(calls[1].init?.signal instanceof AbortSignal);
     assert(calls[2].init?.signal instanceof AbortSignal);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('zoho provider refreshes and retries once after a cached-token 401', async () => {
+  const originalFetch = globalThis.fetch;
+  let tokenCalls = 0;
+  let sendCalls = 0;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    if (String(url).includes('/oauth/v2/token')) {
+      tokenCalls += 1;
+      return new Response(JSON.stringify({ access_token: `access-${tokenCalls}`, expires_in: 3600 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    sendCalls += 1;
+    const authorization = (init?.headers as Record<string, string>).Authorization;
+    if (sendCalls === 1) {
+      assert.equal(authorization, 'Zoho-oauthtoken access-1');
+      return new Response('', { status: 401 });
+    }
+    assert.equal(authorization, 'Zoho-oauthtoken access-2');
+    return new Response(JSON.stringify({ data: { messageId: 'retried-message' } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }) as typeof fetch;
+
+  try {
+    const provider = new ZohoEmailProvider({
+      type: 'email-zoho',
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      refreshToken: 'refresh-token',
+      region: 'eu',
+      accountId: '123456789',
+      fromAddress: 'owner@example.eu'
+    });
+    const result = await provider.send(sampleDraft());
+    assert.equal(result.providerMessageId, 'retried-message');
+    assert.equal(tokenCalls, 2);
+    assert.equal(sendCalls, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('zoho provider redacts malformed token responses', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response('super-secret-refresh-token{', {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  })) as typeof fetch;
+
+  try {
+    const provider = new ZohoEmailProvider({
+      type: 'email-zoho',
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      refreshToken: 'refresh-token',
+      region: 'us',
+      accountId: '123456789',
+      fromAddress: 'owner@example.com'
+    });
+    await assert.rejects(() => provider.send(sampleDraft()), (error: unknown) => {
+      assert(error instanceof Error);
+      assert.match(error.message, /invalid JSON/);
+      assert.doesNotMatch(error.message, /super-secret/);
+      return true;
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }

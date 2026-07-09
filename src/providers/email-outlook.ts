@@ -12,8 +12,7 @@ interface OutlookTokenResponse {
 
 const PROVIDER_FETCH_TIMEOUT_MS = 30_000;
 
-const statusMessage = (prefix: string, status: number, statusText: string): string =>
-  `${prefix}: ${status} ${statusText || 'Unknown error'}`;
+const statusMessage = (prefix: string, status: number): string => `${prefix}: HTTP ${status}`;
 
 const normalizeRecipients = (value: string | string[] | undefined): string[] => {
   if (!value) return [];
@@ -63,16 +62,22 @@ export class OutlookEmailProvider implements Provider {
 
     const response = await fetch(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`, {
       method: 'POST',
+      redirect: 'error',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body,
       signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS)
     });
 
     if (!response.ok) {
-      throw new Error(statusMessage('Outlook token refresh failed', response.status, response.statusText));
+      throw new Error(statusMessage('Outlook token refresh failed', response.status));
     }
 
-    const token = (await response.json()) as OutlookTokenResponse;
+    let token: OutlookTokenResponse;
+    try {
+      token = await response.json() as OutlookTokenResponse;
+    } catch {
+      throw new Error('Outlook token refresh returned invalid JSON');
+    }
     const accessToken = token.access_token;
     if (typeof accessToken !== 'string' || accessToken.length === 0) {
       throw new Error('Outlook token refresh succeeded but no access_token was returned');
@@ -153,6 +158,7 @@ export class OutlookEmailProvider implements Provider {
 
     const response = await fetch(endpoint, {
       method: 'POST',
+      redirect: 'error',
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json'
@@ -165,7 +171,7 @@ export class OutlookEmailProvider implements Provider {
     });
 
     if (!response.ok) {
-      throw new Error(statusMessage('Outlook send failed', response.status, response.statusText));
+      throw new Error(statusMessage('Outlook send failed', response.status));
     }
 
     return {

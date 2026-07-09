@@ -181,6 +181,27 @@ export interface ZohoSenderChoice {
 
 const validEmail = (value: unknown): value is string => isSafeEmailAddress(value);
 
+const normalizedStatus = (value: unknown): string => typeof value === 'string' ? value.trim().toLowerCase() : '';
+
+const accountAllowsSending = (account: Record<string, unknown>): boolean => {
+  if (
+    account.active === false
+    || account.isActive === false
+    || account.enabled === false
+    || account.isEnabled === false
+    || account.outgoingBlocked === true
+    || account.sendMailBlocked === true
+  ) return false;
+
+  const status = normalizedStatus(account.accountStatus ?? account.status ?? account.state);
+  return !['disabled', 'inactive', 'deactivated', 'closed', 'suspended', 'blocked'].includes(status);
+};
+
+const sendDetailAllowsSending = (entry: Record<string, unknown>): boolean => {
+  if (entry.isEnabled === true || entry.enabled === true) return true;
+  return ['enabled', 'active'].includes(normalizedStatus(entry.status ?? entry.state));
+};
+
 const senderAddressesFromAccount = (account: Record<string, unknown>): string[] => {
   const addresses: string[] = [];
   const seen = new Set<string>();
@@ -212,7 +233,7 @@ const senderAddressesFromAccount = (account: Record<string, unknown>): string[] 
     for (const value of account.sendMailDetails) {
       if (!value || typeof value !== 'object') continue;
       const entry = value as Record<string, unknown>;
-      if (entry.isEnabled === false || String(entry.status ?? '').toLowerCase() === 'disabled') continue;
+      if (!sendDetailAllowsSending(entry)) continue;
       add(entry.fromAddress);
     }
   }
@@ -251,6 +272,7 @@ export async function fetchZohoSenderChoices(
   for (const candidate of candidates) {
     if (!candidate || typeof candidate !== 'object') continue;
     const account = candidate as Record<string, unknown>;
+    if (!accountAllowsSending(account)) continue;
     const accountId = isSafeZohoAccountId(account.accountId) ? account.accountId : '';
     if (!accountId) continue;
     const displayName = sanitizeMetadataText(account.displayName);

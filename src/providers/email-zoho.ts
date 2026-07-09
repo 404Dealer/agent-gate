@@ -10,8 +10,7 @@ interface ZohoTokenResponse {
 
 const PROVIDER_FETCH_TIMEOUT_MS = 30_000;
 
-const statusMessage = (prefix: string, status: number, statusText: string): string =>
-  `${prefix}: ${status} ${statusText || 'Unknown error'}`;
+const statusMessage = (prefix: string, status: number): string => `${prefix}: HTTP ${status}`;
 
 const escapeHeaderValue = (value: string): string => value.replace(/[\r\n]+/g, ' ').trim();
 
@@ -44,16 +43,22 @@ export class ZohoEmailProvider implements Provider {
 
     const response = await fetch(new URL('/oauth/v2/token', accountsBaseUrl), {
       method: 'POST',
+      redirect: 'error',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body,
       signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS)
     });
 
     if (!response.ok) {
-      throw new Error(statusMessage('Zoho token refresh failed', response.status, response.statusText));
+      throw new Error(statusMessage('Zoho token refresh failed', response.status));
     }
 
-    const token = (await response.json()) as ZohoTokenResponse;
+    let token: ZohoTokenResponse;
+    try {
+      token = await response.json() as ZohoTokenResponse;
+    } catch {
+      throw new Error('Zoho token refresh returned invalid JSON');
+    }
     const accessToken = token.access_token;
     if (typeof accessToken !== 'string' || !accessToken) {
       throw new Error('Zoho token refresh succeeded but no access_token was returned');
@@ -88,7 +93,7 @@ export class ZohoEmailProvider implements Provider {
       throw new Error('email-zoho provider only supports email drafts');
     }
 
-    const accessToken = await this.getAccessToken();
+    let accessToken = await this.getAccessToken();
     const payload = draft.payload as {
       to: string | string[];
       subject: string;
@@ -99,10 +104,12 @@ export class ZohoEmailProvider implements Provider {
     };
 
     const { mailApiBaseUrl } = getZohoRegionEndpoints(this.providerConfig.region);
-    const response = await fetch(new URL(`/api/accounts/${encodeURIComponent(this.providerConfig.accountId)}/messages`, mailApiBaseUrl), {
+    const endpoint = new URL(`/api/accounts/${encodeURIComponent(this.providerConfig.accountId)}/messages`, mailApiBaseUrl);
+    const sendWithToken = (token: string): Promise<Response> => fetch(endpoint, {
       method: 'POST',
+      redirect: 'error',
       headers: {
-        Authorization: `Zoho-oauthtoken ${accessToken}`,
+        Authorization: `Zoho-oauthtoken ${token}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
@@ -118,11 +125,22 @@ export class ZohoEmailProvider implements Provider {
       signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS)
     });
 
+    let response = await sendWithToken(accessToken);
+    if (response.status === 401) {
+      this.cachedAccessToken = undefined;
+      accessToken = await this.getAccessToken();
+      response = await sendWithToken(accessToken);
+    }
     if (!response.ok) {
-      throw new Error(statusMessage('Zoho send failed', response.status, response.statusText));
+      throw new Error(statusMessage('Zoho send failed', response.status));
     }
 
-    const result = (await response.json()) as { data?: { messageId?: string } };
+    let result: { data?: { messageId?: string } };
+    try {
+      result = await response.json() as { data?: { messageId?: string } };
+    } catch {
+      throw new Error('Zoho send returned invalid JSON');
+    }
     return {
       providerMessageId: result.data?.messageId,
       details: 'Email sent via Zoho'
