@@ -12,6 +12,10 @@ const statusMessage = (prefix: string, status: number, statusText: string): stri
 export class ZohoEmailProvider implements Provider {
   constructor(private readonly providerConfig: Extract<ProviderConfig, { type: 'email-zoho' }>) {}
 
+  describeSender(): string {
+    return this.providerConfig.fromAddress;
+  }
+
   private async getAccessToken(): Promise<string> {
     const body = new URLSearchParams({
       refresh_token: this.providerConfig.refreshToken,

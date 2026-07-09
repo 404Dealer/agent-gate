@@ -3,11 +3,21 @@ import { loadConfig } from './config.js';
 import { DraftWatcher } from './watcher.js';
 import { AgentGateBot } from './bot.js';
 import { Executor } from './executor.js';
+import { formatIsolationReport, verifyDraftDirectoryIsolation } from './security.js';
 
 async function main(): Promise<void> {
   const config = await loadConfig();
   const inboxDir = resolve(config.watch.directory);
   const draftsRoot = dirname(inboxDir);
+
+  if (config.security.enforceProductionPermissions) {
+    const report = await verifyDraftDirectoryIsolation({ rootDir: draftsRoot, inboxDir });
+    if (!report.ok) {
+      console.error(formatIsolationReport(report));
+      process.exit(78);
+    }
+    console.log(formatIsolationReport(report));
+  }
 
   const watcher = new DraftWatcher({
     rootDir: draftsRoot,

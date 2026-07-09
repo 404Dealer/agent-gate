@@ -14,8 +14,17 @@ const WatchConfigSchema = z.object({
   pollIntervalMs: z.number().int().positive().default(2000)
 });
 
+const ApprovalConfigSchema = z.object({
+  bodyPreviewChars: z.number().int().positive().max(12000).default(2000),
+  allowTruncatedApproval: z.boolean().default(false)
+}).default({});
+
+const SecurityConfigSchema = z.object({
+  enforceProductionPermissions: z.boolean().default(false)
+}).default({});
+
 const ProviderSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('log-only') }),
+  z.object({ type: z.literal('log-only'), fromAddress: z.string().email().optional() }),
   z.object({
     type: z.literal('email-zoho'),
     clientId: z.string().min(1),
@@ -29,6 +38,8 @@ const ProviderSchema = z.discriminatedUnion('type', [
 const ConfigSchema = z.object({
   telegram: TelegramConfigSchema,
   watch: WatchConfigSchema,
+  approval: ApprovalConfigSchema,
+  security: SecurityConfigSchema,
   providers: z.record(ProviderSchema),
   defaults: z.object({
     provider: z.string().min(1),

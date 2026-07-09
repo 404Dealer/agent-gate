@@ -40,8 +40,8 @@ This isn't "we told the AI to be careful." It's structural:
 
 - **Process isolation** — agent-gate runs as a separate OS user. The AI agent cannot read, modify, or delete drafts after submission.
 - **Write-only inbox** — the agent can drop files in but cannot read or list the directory (Unix dropbox permissions: `1730`).
-- **Hash-verified approvals** — SHA-256 hash is computed at preview time and embedded in the approve button. If the draft is modified between preview and approval, the approval is rejected.
-- **From-address enforcement** — the `from` field in drafts is ignored. The configured sender address is always used. Prevents spoofing.
+- **Hash-verified approvals** — a full SHA-256 hash is computed at preview time and bound to an unguessable approval nonce. If the draft is modified between preview and approval, the approval is rejected.
+- **From-address enforcement** — the `from` field in drafts is ignored. The approval preview shows the configured sender address and labels the draft `from` as ignored, preventing approval-screen spoofing.
 - **No AI in execution** — the executor reads the approved file directly. No LLM processes, summarizes, or touches the content.
 - **Out-of-band approval** — the Telegram bot has its own token and runs independently. The AI agent has no access to it.
 - **Schema validation** — [Zod](https://zod.dev) schemas enforce bounds on all fields (subject: 500 chars, body: 256KB, tags: 20 max).
@@ -159,6 +159,13 @@ telegram:
 watch:
   directory: "./drafts/inbox"
   pollIntervalMs: 2000
+
+approval:
+  bodyPreviewChars: 2000        # Long bodies are truncated in Telegram previews
+  allowTruncatedApproval: false # Safer default: truncated drafts show Deny only
+
+security:
+  enforceProductionPermissions: false # Set true after applying docs/deployment.md
 
 providers:
   zoho:
@@ -305,15 +312,16 @@ agent-gate/
 
 - ✅ File-based draft queue (inbox → pending → approved → sent)
 - ✅ Telegram bot with inline approve/deny buttons
-- ✅ SHA-256 hash-verified approvals
+- ✅ SHA-256 hash-verified approvals with nonce-bound callbacks
 - ✅ Zoho Mail email provider
 - ✅ Log-only dry-run provider
 - ✅ `${PASS:key}` and `${ENV}` secret resolvers
 - ✅ Schema validation with size/count bounds
 - ✅ JSON audit logging
 - ✅ Symlink/device file rejection
-- ✅ From-address enforcement
-- ✅ Sanitized error handling
+- ✅ From-address enforcement in execution and approval preview
+- ✅ Safe long-body preview policy (truncated drafts deny-only by default)
+- ✅ Optional production permission checks at startup
 
 ### Planned
 
@@ -350,6 +358,19 @@ skill/
 The skill teaches an AI agent how to write properly-formatted draft files. The agent learns the schema, constraints, and workflow — then uses `sg agentgate-inbox` (or the helper script) to drop drafts into the inbox.
 
 Install the skill in your agent framework, point it at your agent-gate inbox, and your agent can propose emails that you approve via Telegram.
+
+## Hermes Agent Integration
+
+See [docs/hermes.md](docs/hermes.md) for a dedicated Hermes setup guide.
+
+agent-gate is intentionally designed as a Hermes-compatible outbound-action gate:
+
+1. Install this repo's `skill/` directory as a Hermes skill, or keep it in a project and load it for sessions that may draft email.
+2. Give Hermes write-only access to `/opt/agent-gate/drafts/inbox` through the `agentgate-inbox` group.
+3. Do **not** give Hermes the SMTP/API credentials that agent-gate uses to send. Hermes should read/search/draft; agent-gate should send.
+4. For a draft request, Hermes writes JSON only and then tells the user it is pending approval. The approved send happens outside the Hermes process.
+
+That separation is what makes the gate stronger than an agent asking, “Should I send this?” and then calling a send tool itself.
 
 ## Contributing
 

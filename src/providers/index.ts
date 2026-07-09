@@ -10,10 +10,11 @@ export interface ProviderResult {
 
 export interface Provider {
   send(draft: Draft): Promise<ProviderResult>;
+  describeSender(): string;
 }
 
 export function createProvider(config: ProviderConfig): Provider {
-  if (config.type === 'log-only') return new LogOnlyProvider();
+  if (config.type === 'log-only') return new LogOnlyProvider(config.fromAddress);
   if (config.type === 'email-zoho') return new ZohoEmailProvider(config);
   throw new Error(`Unsupported provider type: ${(config as { type?: string }).type ?? 'unknown'}`);
 }

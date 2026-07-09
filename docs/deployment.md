@@ -148,6 +148,13 @@ defaults:
   timezone: "America/Chicago"
   autoDeleteAfterDays: 30
 
+approval:
+  bodyPreviewChars: 2000
+  allowTruncatedApproval: false
+
+security:
+  enforceProductionPermissions: true
+
 audit:
   enabled: true
   logFile: "/opt/agent-gate/audit.log"
@@ -216,7 +223,14 @@ sudo systemctl start agent-gate
 Verify it's running:
 
 ```bash
+sudo systemctl status agent-gate --no-pager
 sudo journalctl -u agent-gate -f
+```
+
+With `security.enforceProductionPermissions: true`, startup fails closed if the draft directories do not match the production isolation model. A healthy startup logs:
+
+```text
+✅ Draft directory isolation checks passed.
 ```
 
 ## Phase 6 — Restrict Your Agent's sudo (Optional)

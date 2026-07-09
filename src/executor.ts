@@ -18,6 +18,12 @@ export class Executor {
     );
   }
 
+  describeProviderSender(providerName: string): string {
+    const provider = this.providers[providerName];
+    if (!provider) return `[provider not configured: ${providerName}]`;
+    return provider.describeSender();
+  }
+
   async executeApprovedDraft(filePath: string): Promise<void> {
     const raw = await readFile(filePath, 'utf8');
     const draft = DraftSchema.parse(JSON.parse(raw));

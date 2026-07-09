@@ -1,34 +1,72 @@
 ---
 name: agent-gate
-description: Send emails and trigger external actions through a human-approved, deterministic approval pipeline. Use when the user asks to send an email, draft an email, send a message to someone, trigger a webhook, or perform any external action that requires human approval before execution. Also use when the user says "email," "send to," "draft to," "reach out to," or "message someone." The agent writes a JSON draft file; a separate Telegram bot presents it to the human for approval; a deterministic script executes exactly what was approved. No AI in the execution path.
+description: Send emails and external actions through a human-approved deterministic gate. Use when the user asks Hermes to send, reply, forward, trigger a webhook, or perform any external side effect that should be reviewed before execution.
+version: 1.0.0
+author: 404Dealer
+license: MIT
+metadata:
+  hermes:
+    tags: [email, approval, hermes, security, prompt-injection, outbound-actions]
 ---
 
-# agent-gate — Deterministic Approval Layer
+# agent-gate — Hermes Outbound Action Gate
 
-You have access to agent-gate, a tool that lets you draft external actions (emails, webhooks) that require human approval before execution. You write a JSON draft file to an inbox directory; a separate system handles preview, approval, and sending.
+agent-gate lets Hermes **propose** outbound actions while a separate process owns approval and execution. Hermes writes a JSON draft into a write-only inbox; agent-gate previews the exact draft in Telegram; the human approves or denies; a deterministic provider sends exactly what was approved.
 
-**You can only propose actions. You cannot send directly.** This is by design.
+**Hermes must not send directly when this skill is active.** Draft only, then tell the user it is pending approval.
 
-## How It Works
+## Security Contract
 
-1. You write a JSON draft file to the inbox directory
-2. agent-gate picks it up and sends a preview to the human's Telegram
-3. The human taps Approve or Deny
-4. If approved, a deterministic script sends exactly what was previewed
+Use this skill only when the deployment preserves the structural boundary:
 
-## Writing a Draft
+1. agent-gate runs as a separate OS user, normally `agentgate`.
+2. Hermes can write only to the inbox directory, normally `/opt/agent-gate/drafts/inbox`.
+3. Hermes cannot read/list/modify `pending/`, `approved/`, `sent/`, `denied/`, `failed/`, config, provider credentials, or the Telegram approval bot token.
+4. agent-gate config has `security.enforceProductionPermissions: true` in production.
+5. Send credentials live only in agent-gate, not in Hermes.
 
-Drop a `.json` file into the inbox. Use `sg agentgate-inbox` to write to the dropbox directory:
+If any of these are false, the gate is a convenience workflow, not a hard security boundary.
+
+## When to Use
+
+Use for:
+
+- sending or replying to email
+- forwarding email
+- sending webhooks/API calls
+- social posts or other external side effects once providers exist
+- any prompt-injection-sensitive workflow where Hermes can read untrusted text and then might act externally
+
+Do **not** use for:
+
+- read-only email search/summarization
+- drafting text for the user to copy manually
+- internal file edits that do not leave the machine
+
+## Draft Workflow
+
+1. Gather the user’s requested recipients, subject, body, provider, and context.
+2. Write a valid draft JSON file into the inbox.
+3. Tell the user what was drafted and that approval is pending in Telegram.
+4. Do **not** claim the action was sent. It is only pending until agent-gate reports success to the human.
+
+## Helper Script
+
+Preferred path from Hermes:
 
 ```bash
-sg agentgate-inbox -c 'cat > /opt/agent-gate/drafts/inbox/FILENAME.json << '\''DRAFT'\''
-{JSON_CONTENT}
-DRAFT'
+/path/to/agent-gate/skill/scripts/draft-email.sh \
+  'recipient@example.com' \
+  'Subject line' \
+  '<p>HTML body</p>' \
+  'zoho' \
+  'User asked me to follow up after our call' \
+  'hermes-agent'
 ```
 
-### Draft Schema
+The helper uses `sg agentgate-inbox` to drop the file into `/opt/agent-gate/drafts/inbox`. If the production path differs, set `AGENT_GATE_INBOX` before running the helper.
 
-Every draft must include these fields:
+## Manual Draft Schema
 
 ```json
 {
@@ -37,97 +75,57 @@ Every draft must include these fields:
   "status": "pending",
   "createdAt": "ISO-8601",
   "updatedAt": "ISO-8601",
-  "source": "agent-name",
+  "source": "hermes-agent",
   "provider": "zoho",
   "payload": {
     "from": "ignored@example.com",
     "to": "recipient@example.com",
-    "subject": "Subject line (max 500 chars)",
-    "body": "HTML content (max 256KB)",
+    "subject": "Subject line",
+    "body": "<p>HTML body</p>",
     "cc": [],
     "bcc": [],
     "replyTo": ""
   },
   "metadata": {
-    "context": "Why you drafted this (shown to human in preview)",
+    "context": "Why Hermes drafted this; shown in approval preview",
     "priority": "normal",
-    "tags": ["tag1", "tag2"]
+    "tags": ["follow-up"]
   }
 }
 ```
 
-**Important:**
-- `id` must be a valid UUID v4. Generate one with: `$(cat /proc/sys/kernel/random/uuid)`
-- `status` must be `"pending"` for new drafts
-- `from` is ignored — the configured sender address is always used
-- `provider` must match a configured provider key (check config)
-- `body` supports HTML
-- `context` in metadata is shown to the human — explain WHY you're sending this
+Rules:
 
-### Filename Convention
+- `id` must be UUID v4. Generate with `cat /proc/sys/kernel/random/uuid`.
+- `status` must be `pending`.
+- `from` is accepted for compatibility but ignored by agent-gate; the configured provider sender is shown in the approval preview and used for execution.
+- `body` supports HTML and is limited to 256KB by schema.
+- Long/truncated previews are deny-only by default unless the operator explicitly opts into `approval.allowTruncatedApproval`.
+- `metadata.context` should explain why this draft exists; the human sees it.
 
-Use descriptive filenames: `{purpose}-{timestamp}.json`
+## After Submitting
 
-Examples: `follow-up-2026-02-21.json`, `job-app-acme-corp.json`, `weekly-update.json`
+Reply to the user with:
 
-### Complete Example
+- recipient(s)
+- subject
+- one-sentence summary
+- “Waiting for approval in agent-gate Telegram.”
 
-```bash
-DRAFT_ID=$(cat /proc/sys/kernel/random/uuid)
-DRAFT_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+Never say “sent” unless the deterministic gate itself reports a sent status.
 
-sg agentgate-inbox -c "cat > /opt/agent-gate/drafts/inbox/follow-up-$(date +%Y%m%d).json << 'DRAFT'
-{
-  \"id\": \"$DRAFT_ID\",
-  \"type\": \"email\",
-  \"status\": \"pending\",
-  \"createdAt\": \"$DRAFT_TS\",
-  \"updatedAt\": \"$DRAFT_TS\",
-  \"source\": \"main-agent\",
-  \"provider\": \"zoho\",
-  \"payload\": {
-    \"from\": \"noreply@example.com\",
-    \"to\": \"recipient@example.com\",
-    \"subject\": \"Following up on our conversation\",
-    \"body\": \"<p>Hi,</p><p>Just following up on our chat yesterday. Let me know if you have any questions.</p><p>Best,<br>Johnny</p>\",
-    \"cc\": [],
-    \"bcc\": [],
-    \"replyTo\": \"\"
-  },
-  \"metadata\": {
-    \"context\": \"User asked me to follow up after yesterday's meeting\",
-    \"priority\": \"normal\",
-    \"tags\": [\"follow-up\"]
-  }
-}
-DRAFT"
-```
+## Common Pitfalls
 
-## After Drafting
+1. **Giving Hermes send credentials.** This defeats the hard boundary. Hermes can read/search/draft; agent-gate sends.
+2. **Running Hermes and agent-gate as the same Unix user.** This lets Hermes tamper with pending drafts. Use the production deployment guide.
+3. **Approving truncated content.** If the body is too long for Telegram preview, keep deny-only approval unless you have a full-draft review path.
+4. **Trusting draft `from`.** It is ignored. The provider config is authoritative.
+5. **Checking status from the inbox.** The inbox is write-only; the human sees status in Telegram and audit logs.
 
-After writing the draft file, tell the user:
-- What you drafted (to, subject, brief summary)
-- That it's waiting for their approval in Telegram
-- They can approve or deny it there
+## Verification Checklist
 
-Do NOT tell the user the email has been sent. It hasn't — it's pending approval.
-
-## Checking Draft Status
-
-The inbox is write-only — you cannot read back drafts or check status. The human sees the status in Telegram. If asked about a draft's status, tell the user to check their Telegram bot (@CounterSign_bot).
-
-## Providers
-
-Available providers depend on the agent-gate config. Common ones:
-- `zoho` — sends email via Zoho Mail API
-- `log` — dry run, logs but doesn't send (for testing)
-
-## Constraints
-
-- Max subject: 500 characters
-- Max body: 256KB
-- Max tags: 20
-- Max context: 1000 characters
-- Only regular files accepted (no symlinks)
-- Max file size: 512KB
-- Draft must be valid JSON and pass schema validation or it goes to `failed/`
+- [ ] Draft JSON validates and is under 512KB
+- [ ] Draft was written to the inbox, not to pending/approved directly
+- [ ] User was told the draft is pending approval, not sent
+- [ ] No send credential was used by Hermes
+- [ ] For production, `security.enforceProductionPermissions` is enabled

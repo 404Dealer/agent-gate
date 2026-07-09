@@ -6,6 +6,16 @@ watch:
   directory: "./drafts/inbox"
   pollIntervalMs: 2000
 
+# Approval preview policy. By default, long/truncated bodies cannot be approved
+# from Telegram until you provide a full-review path or opt in explicitly.
+approval:
+  bodyPreviewChars: 2000
+  allowTruncatedApproval: false
+
+# Set true in production after applying docs/deployment.md permissions.
+security:
+  enforceProductionPermissions: false
+
 providers:
   zoho:
     type: "email-zoho"
