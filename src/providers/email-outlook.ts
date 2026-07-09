@@ -1,9 +1,13 @@
 import type { ProviderConfig } from '../config.js';
+import type { SecretStore } from '../oauth/persist.js';
+import { PassSecretStore } from '../oauth/secret-store.js';
 import type { Draft } from '../schema.js';
 import type { Provider, ProviderResult } from './index.js';
 
 interface OutlookTokenResponse {
   access_token?: string;
+  refresh_token?: string;
+  expires_in?: number | string;
 }
 
 const PROVIDER_FETCH_TIMEOUT_MS = 30_000;
@@ -30,21 +34,32 @@ const graphRecipients = (value: string | string[] | undefined): Array<{ emailAdd
   normalizeRecipients(value).map((address) => ({ emailAddress: { address: escapeHeaderValue(address) } }));
 
 export class OutlookEmailProvider implements Provider {
-  constructor(private readonly providerConfig: Extract<ProviderConfig, { type: 'email-outlook' }>) {}
+  private currentRefreshToken: string;
+  private cachedAccessToken?: { value: string; expiresAt: number };
+  private pendingAccessToken?: Promise<string>;
+
+  constructor(
+    private readonly providerConfig: Extract<ProviderConfig, { type: 'email-outlook' }>,
+    private readonly secretStore: SecretStore = new PassSecretStore()
+  ) {
+    this.currentRefreshToken = providerConfig.refreshToken;
+  }
 
   describeSender(): string {
     return formatMailbox(this.providerConfig.fromAddress, this.providerConfig.displayName);
   }
 
-  private async getAccessToken(): Promise<string> {
+  private async refreshAccessToken(): Promise<string> {
     const tenantId = encodeURIComponent(this.providerConfig.tenantId ?? 'common');
     const body = new URLSearchParams({
-      refresh_token: this.providerConfig.refreshToken,
+      refresh_token: this.currentRefreshToken,
       client_id: this.providerConfig.clientId,
-      client_secret: this.providerConfig.clientSecret,
       grant_type: 'refresh_token',
       scope: 'offline_access Mail.Send'
     });
+    if (this.providerConfig.clientSecret) {
+      body.set('client_secret', this.providerConfig.clientSecret);
+    }
 
     const response = await fetch(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`, {
       method: 'POST',
@@ -62,7 +77,39 @@ export class OutlookEmailProvider implements Provider {
     if (typeof accessToken !== 'string' || accessToken.length === 0) {
       throw new Error('Outlook token refresh succeeded but no access_token was returned');
     }
+
+    const rotatedRefreshToken = token.refresh_token;
+    if (typeof rotatedRefreshToken === 'string' && rotatedRefreshToken && rotatedRefreshToken !== this.currentRefreshToken) {
+      if (!this.providerConfig.refreshTokenKey) {
+        throw new Error('Outlook refreshTokenKey is required to persist a rotated refresh token');
+      }
+      await this.secretStore.set(this.providerConfig.refreshTokenKey, rotatedRefreshToken);
+      this.currentRefreshToken = rotatedRefreshToken;
+    }
+
+    const expiresInSeconds = Number(token.expires_in);
+    if (Number.isFinite(expiresInSeconds) && expiresInSeconds > 60) {
+      this.cachedAccessToken = {
+        value: accessToken,
+        expiresAt: Date.now() + expiresInSeconds * 1_000
+      };
+    }
     return accessToken;
+  }
+
+  private async getAccessToken(): Promise<string> {
+    if (this.cachedAccessToken && Date.now() + 60_000 < this.cachedAccessToken.expiresAt) {
+      return this.cachedAccessToken.value;
+    }
+    if (this.pendingAccessToken) return this.pendingAccessToken;
+
+    const pending = this.refreshAccessToken();
+    this.pendingAccessToken = pending;
+    try {
+      return await pending;
+    } finally {
+      if (this.pendingAccessToken === pending) this.pendingAccessToken = undefined;
+    }
   }
 
   private buildGraphMessage(draft: Draft): Record<string, unknown> {

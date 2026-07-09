@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { loadConfig } from '../src/config.js';
 import { OutlookEmailProvider } from '../src/providers/email-outlook.js';
 import type { Draft } from '../src/schema.js';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -42,8 +42,8 @@ providers:
   outlook:
     type: email-outlook
     clientId: client-id
-    clientSecret: client-secret
     refreshToken: refresh-token
+    refreshTokenKey: agent-gate/microsoft-refresh-token
     tenantId: common
     fromAddress: sender@outlook.com
     displayName: Johnny Silverhand
@@ -58,6 +58,12 @@ audit:
     const config = await loadConfig(configPath);
     assert.equal(config.providers.outlook.type, 'email-outlook');
     assert.equal(config.providers.outlook.fromAddress, 'sender@outlook.com');
+    assert.equal(config.providers.outlook.clientSecret, undefined);
+    assert.equal(config.providers.outlook.refreshTokenKey, 'agent-gate/microsoft-refresh-token');
+
+    const source = await readFile(configPath, 'utf8');
+    await writeFile(configPath, source.replace('agent-gate/microsoft-refresh-token', '../invalid-key'), 'utf8');
+    await assert.rejects(() => loadConfig(configPath));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -81,7 +87,6 @@ test('outlook provider refreshes OAuth token and sends a Graph sendMail payload'
     const provider = new OutlookEmailProvider({
       type: 'email-outlook',
       clientId: 'client-id',
-      clientSecret: 'client-secret',
       refreshToken: 'refresh-token',
       tenantId: 'common',
       fromAddress: 'sender@outlook.com',
@@ -102,6 +107,7 @@ test('outlook provider refreshes OAuth token and sends a Graph sendMail payload'
     const tokenBody = calls[0].init?.body as URLSearchParams;
     assert.equal(tokenBody.get('grant_type'), 'refresh_token');
     assert.equal(tokenBody.get('scope'), 'offline_access Mail.Send');
+    assert.equal(tokenBody.get('client_secret'), null);
 
     const sendBody = JSON.parse(String(calls[1].init?.body)) as {
       message: {
@@ -124,6 +130,133 @@ test('outlook provider refreshes OAuth token and sends a Graph sendMail payload'
     assert.equal(sendBody.saveToSentItems, true);
     assert.doesNotMatch(String(calls[1].init?.body), /ignored@example\.com/);
   } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('outlook provider persists and reuses rotated refresh tokens', async () => {
+  const tokenBodies: URLSearchParams[] = [];
+  const stored: Array<{ key: string; value: string }> = [];
+  const originalFetch = globalThis.fetch;
+  let refreshCount = 0;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    if (String(url).includes('login.microsoftonline.com/common/oauth2/v2.0/token')) {
+      tokenBodies.push(init?.body as URLSearchParams);
+      refreshCount += 1;
+      return new Response(JSON.stringify({
+        access_token: `access-${refreshCount}`,
+        refresh_token: `rotated-refresh-${refreshCount}`
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (String(url) === 'https://graph.microsoft.com/v1.0/me/sendMail') {
+      return new Response('', { status: 202 });
+    }
+    return new Response('unexpected url', { status: 500 });
+  }) as typeof fetch;
+
+  try {
+    const provider = new OutlookEmailProvider({
+      type: 'email-outlook',
+      clientId: 'client-id',
+      refreshToken: 'initial-refresh-token',
+      refreshTokenKey: 'agent-gate/microsoft-refresh-token',
+      tenantId: 'common',
+      fromAddress: 'sender@outlook.com'
+    }, {
+      set: async (key: string, value: string) => { stored.push({ key, value }); }
+    });
+
+    await provider.send(sampleDraft());
+    await provider.send(sampleDraft());
+
+    assert.equal(tokenBodies[0].get('refresh_token'), 'initial-refresh-token');
+    assert.equal(tokenBodies[1].get('refresh_token'), 'rotated-refresh-1');
+    assert.deepEqual(stored, [
+      { key: 'agent-gate/microsoft-refresh-token', value: 'rotated-refresh-1' },
+      { key: 'agent-gate/microsoft-refresh-token', value: 'rotated-refresh-2' }
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('outlook provider fails closed when a rotated token has no persistence key', async () => {
+  const originalFetch = globalThis.fetch;
+  let graphCalls = 0;
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    if (String(url).includes('/oauth2/v2.0/token')) {
+      return new Response(JSON.stringify({
+        access_token: 'access-token',
+        refresh_token: 'rotated-refresh-token'
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    graphCalls += 1;
+    return new Response('', { status: 202 });
+  }) as typeof fetch;
+
+  try {
+    const provider = new OutlookEmailProvider({
+      type: 'email-outlook',
+      clientId: 'client-id',
+      refreshToken: 'initial-refresh-token',
+      tenantId: 'common',
+      fromAddress: 'sender@outlook.com'
+    });
+
+    await assert.rejects(() => provider.send(sampleDraft()), /refreshTokenKey.*persist/i);
+    assert.equal(graphCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('outlook provider serializes concurrent refresh-token rotation', async () => {
+  const originalFetch = globalThis.fetch;
+  let releaseTokenResponse!: () => void;
+  const tokenGate = new Promise<void>((resolve) => { releaseTokenResponse = resolve; });
+  let tokenCalls = 0;
+  let graphCalls = 0;
+  const stored: Array<{ key: string; value: string }> = [];
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    if (String(url).includes('/oauth2/v2.0/token')) {
+      tokenCalls += 1;
+      await tokenGate;
+      return new Response(JSON.stringify({
+        access_token: 'shared-access-token',
+        refresh_token: 'rotated-refresh-token',
+        expires_in: 3600
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    graphCalls += 1;
+    return new Response('', { status: 202 });
+  }) as typeof fetch;
+
+  try {
+    const provider = new OutlookEmailProvider({
+      type: 'email-outlook',
+      clientId: 'client-id',
+      refreshToken: 'initial-refresh-token',
+      refreshTokenKey: 'agent-gate/microsoft-refresh-token-version',
+      tenantId: 'common',
+      fromAddress: 'sender@outlook.com'
+    }, {
+      set: async (key: string, value: string) => { stored.push({ key, value }); }
+    });
+
+    const first = provider.send(sampleDraft());
+    const second = provider.send(sampleDraft());
+    await new Promise((resolve) => setImmediate(resolve));
+    releaseTokenResponse();
+    await Promise.all([first, second]);
+
+    assert.equal(tokenCalls, 1);
+    assert.equal(graphCalls, 2);
+    assert.deepEqual(stored, [{
+      key: 'agent-gate/microsoft-refresh-token-version',
+      value: 'rotated-refresh-token'
+    }]);
+  } finally {
+    releaseTokenResponse?.();
     globalThis.fetch = originalFetch;
   }
 });

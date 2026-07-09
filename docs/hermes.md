@@ -54,18 +54,19 @@ If these are not true, agent-gate still provides a useful review UX, but Hermes 
 Copy or symlink this repo's `skill/` directory into Hermes:
 
 ```bash
-mkdir -p ~/.hermes/skills/security
-ln -sfn /opt/agent-gate/skill ~/.hermes/skills/security/agent-gate
+mkdir -p ~/.hermes/skills
+ln -sfn /opt/agent-gate/skill ~/.hermes/skills/agent-gate
+hermes skills list
 ```
 
-Start a new Hermes session or `/reset` so the skill is discoverable.
+Restart the Hermes gateway or start a new session, then verify `agent-gate` appears as an enabled local skill.
 
 ## Hermes-Assisted Install Without Sharing Send Credentials
 
 A secure install should be split into two parts:
 
 1. **Hermes-assisted infrastructure setup** — Hermes can clone the repo, run tests/build, run `scripts/install-production.sh`, set non-secret config values, and verify systemd health.
-2. **Human-only secret handoff** — the operator runs `scripts/configure-provider-secrets.sh` from their own terminal or SSH session, outside the Hermes conversation.
+2. **Human-only provider authorization** — the operator runs `scripts/oauth-setup.sh` from their own terminal or SSH session, outside the Hermes conversation. The browser/provider returns tokens directly to an `agentgate` process.
 
 Example infrastructure command Hermes can help prepare or run after explicit sudo approval:
 
@@ -75,22 +76,27 @@ sudo scripts/install-production.sh \
   --telegram-user-id 2061243435
 ```
 
-Example secret handoff commands the operator should run personally:
+Example provider authorization commands the operator should run personally:
 
 ```bash
-sudo scripts/configure-provider-secrets.sh telegram
-sudo scripts/configure-provider-secrets.sh gmail
+sudo /opt/agent-gate/scripts/oauth-setup.sh gmail
 # or
-sudo scripts/configure-provider-secrets.sh outlook
+sudo /opt/agent-gate/scripts/oauth-setup.sh outlook
 # or
-sudo scripts/configure-provider-secrets.sh zoho
+sudo /opt/agent-gate/scripts/oauth-setup.sh zoho
+```
+
+The separate Telegram approval-bot token still uses the human-only manual helper:
+
+```bash
+sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
 ```
 
 Do not paste Gmail/Zoho/Outlook refresh tokens, SMTP passwords, API keys, or the agent-gate approval bot token into Hermes. Hermes can verify that secret references exist, but it should not print or receive their values.
 
 Do not rely on “Hermes will delete the credentials afterward” as a security boundary. Once Hermes sees a secret, it may already be present in chat/session history, logs, shell history, model context, or backups. The secure pattern is: Hermes installs infrastructure, then a human/OAuth flow gives secrets directly to `agentgate`.
 
-See [credential-handoff.md](credential-handoff.md) for the detailed operator responsibilities and token patterns.
+See [credential-handoff.md](credential-handoff.md) for detailed operator responsibilities and [oauth-onboarding.md](oauth-onboarding.md) for provider registration, SSH tunnels, scopes, and browser/device flows.
 
 ## Give Hermes Write-Only Inbox Access
 
@@ -136,7 +142,7 @@ Hermes should **not** say “sent” and should not call any direct send tool.
 
 ## Production Check
 
-Set this in `/opt/agent-gate/config.yaml`:
+Set this in `/opt/agent-gate/config/config.yaml`:
 
 ```yaml
 security:

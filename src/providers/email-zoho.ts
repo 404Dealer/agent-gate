@@ -1,10 +1,14 @@
 import type { ProviderConfig } from '../config.js';
 import type { Draft } from '../schema.js';
+import { getZohoRegionEndpoints } from '../oauth/zoho.js';
 import type { Provider, ProviderResult } from './index.js';
 
 interface ZohoTokenResponse {
-  access_token: string;
+  access_token?: string;
+  expires_in?: number | string;
 }
+
+const PROVIDER_FETCH_TIMEOUT_MS = 30_000;
 
 const statusMessage = (prefix: string, status: number, statusText: string): string =>
   `${prefix}: ${status} ${statusText || 'Unknown error'}`;
@@ -20,24 +24,29 @@ const formatMailbox = (email: string, displayName?: string): string => {
 };
 
 export class ZohoEmailProvider implements Provider {
+  private cachedAccessToken?: { value: string; expiresAt: number };
+  private pendingAccessToken?: Promise<string>;
+
   constructor(private readonly providerConfig: Extract<ProviderConfig, { type: 'email-zoho' }>) {}
 
   describeSender(): string {
     return formatMailbox(this.providerConfig.fromAddress, this.providerConfig.displayName);
   }
 
-  private async getAccessToken(): Promise<string> {
+  private async refreshAccessToken(): Promise<string> {
     const body = new URLSearchParams({
       refresh_token: this.providerConfig.refreshToken,
       client_id: this.providerConfig.clientId,
       client_secret: this.providerConfig.clientSecret,
       grant_type: 'refresh_token'
     });
+    const { accountsBaseUrl } = getZohoRegionEndpoints(this.providerConfig.region);
 
-    const response = await fetch('https://accounts.zoho.com/oauth/v2/token', {
+    const response = await fetch(new URL('/oauth/v2/token', accountsBaseUrl), {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body
+      body,
+      signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS)
     });
 
     if (!response.ok) {
@@ -45,7 +54,33 @@ export class ZohoEmailProvider implements Provider {
     }
 
     const token = (await response.json()) as ZohoTokenResponse;
-    return token.access_token;
+    const accessToken = token.access_token;
+    if (typeof accessToken !== 'string' || !accessToken) {
+      throw new Error('Zoho token refresh succeeded but no access_token was returned');
+    }
+    const expiresInSeconds = Number(token.expires_in);
+    if (Number.isFinite(expiresInSeconds) && expiresInSeconds > 60) {
+      this.cachedAccessToken = {
+        value: accessToken,
+        expiresAt: Date.now() + expiresInSeconds * 1_000
+      };
+    }
+    return accessToken;
+  }
+
+  private async getAccessToken(): Promise<string> {
+    if (this.cachedAccessToken && Date.now() + 60_000 < this.cachedAccessToken.expiresAt) {
+      return this.cachedAccessToken.value;
+    }
+    if (this.pendingAccessToken) return this.pendingAccessToken;
+
+    const pending = this.refreshAccessToken();
+    this.pendingAccessToken = pending;
+    try {
+      return await pending;
+    } finally {
+      if (this.pendingAccessToken === pending) this.pendingAccessToken = undefined;
+    }
   }
 
   async send(draft: Draft): Promise<ProviderResult> {
@@ -63,7 +98,8 @@ export class ZohoEmailProvider implements Provider {
       replyTo?: string;
     };
 
-    const response = await fetch(`https://mail.zoho.com/api/accounts/${this.providerConfig.accountId}/messages`, {
+    const { mailApiBaseUrl } = getZohoRegionEndpoints(this.providerConfig.region);
+    const response = await fetch(new URL(`/api/accounts/${encodeURIComponent(this.providerConfig.accountId)}/messages`, mailApiBaseUrl), {
       method: 'POST',
       headers: {
         Authorization: `Zoho-oauthtoken ${accessToken}`,
@@ -78,7 +114,8 @@ export class ZohoEmailProvider implements Provider {
         ccAddress: (payload.cc ?? []).join(','),
         bccAddress: (payload.bcc ?? []).join(','),
         replyTo: payload.replyTo ?? ''
-      })
+      }),
+      signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS)
     });
 
     if (!response.ok) {

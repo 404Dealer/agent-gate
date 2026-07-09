@@ -4,7 +4,8 @@
   "description": "Deterministic approval layer between AI agents and external actions",
   "type": "module",
   "bin": {
-    "agent-gate": "./dist/index.js"
+    "agent-gate": "./dist/index.js",
+    "agent-gate-oauth": "./dist/oauth-setup.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -43,7 +44,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
-    "tsx": "^4.20.5",
+    "tsx": "^4.23.0",
     "typescript": "^5.9.2"
   }
 }

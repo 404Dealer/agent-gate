@@ -49,7 +49,7 @@ agent-gate is only a **hard security boundary** when these requirements are true
 
 If you run agent-gate and your agent as the same Unix user, or give the agent direct send credentials, agent-gate is still useful as an approval workflow — but it is **not** a structural security boundary.
 
-See [docs/deployment.md](docs/deployment.md) for the production filesystem setup, [docs/hermes.md](docs/hermes.md) for Hermes-specific integration, and [docs/credential-handoff.md](docs/credential-handoff.md) for the operator responsibilities and secret handoff flow.
+See [docs/deployment.md](docs/deployment.md) for the production filesystem setup, [docs/hermes.md](docs/hermes.md) for Hermes-specific integration, [docs/credential-handoff.md](docs/credential-handoff.md) for operator responsibilities, and [docs/oauth-onboarding.md](docs/oauth-onboarding.md) for direct-to-`agentgate` browser/device authorization.
 
 ## How This Differs from Hermes Built-In Approval
 
@@ -203,7 +203,7 @@ providers:
   gmail:
     type: "email-gmail"
     clientId: "${GOOGLE_CLIENT_ID}"
-    clientSecret: "${GOOGLE_CLIENT_SECRET}"
+    # Desktop/public-client OAuth does not use clientSecret.
     refreshToken: "${GOOGLE_REFRESH_TOKEN}"
     fromAddress: "you@gmail.com"
     displayName: "Your Name"
@@ -211,7 +211,7 @@ providers:
   outlook:
     type: "email-outlook"
     clientId: "${MICROSOFT_CLIENT_ID}"
-    clientSecret: "${MICROSOFT_CLIENT_SECRET}"
+    # Omit clientSecret for public-client PKCE/device flows.
     refreshToken: "${MICROSOFT_REFRESH_TOKEN}"
     tenantId: "common"
     fromAddress: "you@outlook.com"
@@ -222,6 +222,7 @@ providers:
     clientId: "${ZOHO_CLIENT_ID}"
     clientSecret: "${ZOHO_CLIENT_SECRET}"
     refreshToken: "${ZOHO_REFRESH_TOKEN}"
+    region: "us"
     accountId: "${ZOHO_ACCOUNT_ID}"
     fromAddress: "you@yourdomain.com"
 
@@ -249,6 +250,21 @@ Config placeholders support two resolvers:
 
 **Unresolved placeholders cause a hard failure at startup.** No silent empty strings.
 
+### Secure OAuth onboarding
+
+A production installation can acquire provider refresh tokens without giving them to Hermes:
+
+```bash
+# Human-controlled terminal only
+sudo /opt/agent-gate/scripts/oauth-setup.sh gmail
+sudo /opt/agent-gate/scripts/oauth-setup.sh outlook
+sudo /opt/agent-gate/scripts/oauth-setup.sh zoho
+```
+
+The helper drops privileges to `agentgate` with a clean environment, uses state-bound PKCE browser authorization, writes tokens directly to the encrypted password store, atomically updates private config with `${PASS:...}` references, and restarts the service. Gmail, Outlook, and Zoho use SSH-forwarded loopback callbacks by default. Outlook device authorization is available only as an explicit `--device-code` fallback.
+
+See **[docs/oauth-onboarding.md](docs/oauth-onboarding.md)** for provider registration and exact commands.
+
 ## Providers
 
 ### `log-only`
@@ -261,21 +277,22 @@ Sends email via the [Gmail API](https://developers.google.com/gmail/api/referenc
 
 | Config Key | Description |
 |------------|-------------|
-| `clientId` | Google Cloud OAuth Desktop/Web client ID |
-| `clientSecret` | Google Cloud OAuth client secret |
+| `clientId` | Google Cloud OAuth client ID; Desktop client recommended |
+| `clientSecret` | Optional legacy/confidential-client secret; omitted by secure Desktop onboarding |
 | `refreshToken` | OAuth refresh token with Gmail send scope |
 | `fromAddress` | Enforced sender address or configured Gmail send-as alias |
 | `displayName` | Optional display name shown in From header |
 
 ### `email-outlook`
 
-Sends email via [Microsoft Graph sendMail](https://learn.microsoft.com/en-us/graph/api/user-sendmail) using Microsoft Entra OAuth refresh token flow. The OAuth app needs delegated `offline_access` and `Mail.Send` scopes.
+Sends email via [Microsoft Graph sendMail](https://learn.microsoft.com/en-us/graph/api/user-sendmail) using Microsoft Entra OAuth refresh token flow. Secure onboarding requests delegated `offline_access`, `Mail.Send`, and onboarding-only `User.Read` scopes.
 
 | Config Key | Description |
 |------------|-------------|
 | `clientId` | Microsoft Entra app/client ID |
-| `clientSecret` | Microsoft Entra client secret |
+| `clientSecret` | Optional confidential-client secret; omitted for recommended public-client PKCE/device flows |
 | `refreshToken` | OAuth refresh token with `offline_access Mail.Send` |
+| `refreshTokenKey` | Optional password-store key used to persist Microsoft token rotation |
 | `tenantId` | Tenant ID, or `common` for personal/multi-tenant auth |
 | `userId` | Optional mailbox/user id; omitted uses `/me/sendMail` |
 | `fromAddress` | Enforced sender address shown in approval preview |
@@ -289,7 +306,8 @@ Sends email via the [Zoho Mail API](https://www.zoho.com/mail/help/api/) using O
 |------------|-------------|
 | `clientId` | Zoho API Console client ID |
 | `clientSecret` | Zoho API Console client secret |
-| `refreshToken` | Permanent refresh token (`ZohoMail.messages.CREATE` scope) |
+| `refreshToken` | Long-lived refresh token (`ZohoMail.messages.CREATE` scope) |
+| `region` | Pinned Zoho data center: `us`, `eu`, `in`, `au`, `jp`, `ca`, or `sa` (default `us`) |
 | `accountId` | Zoho account ID |
 | `fromAddress` | Enforced sender address (overrides draft `from`) |
 
@@ -358,6 +376,8 @@ agent-gate/
 ├── src/
 │   ├── index.ts          # Entry point
 │   ├── config.ts         # Config loader + secret resolution
+│   ├── oauth-setup.ts    # Human-only PKCE OAuth CLI (device fallback for Outlook)
+│   ├── oauth/            # PKCE, callback, provider OAuth, secure persistence
 │   ├── watcher.ts        # File watcher (inbox → pending)
 │   ├── bot.ts            # Telegram bot (previews + callbacks)
 │   ├── executor.ts       # Reads approved drafts, dispatches to providers
@@ -393,6 +413,7 @@ agent-gate/
 - ✅ Gmail email provider
 - ✅ Outlook / Microsoft Graph email provider
 - ✅ Zoho Mail email provider
+- ✅ Direct-to-`agentgate` browser/device OAuth onboarding for Gmail, Outlook, and Zoho
 - ✅ Log-only dry-run provider
 - ✅ `${PASS:key}` and `${ENV}` secret resolvers
 - ✅ Schema validation with size/count bounds

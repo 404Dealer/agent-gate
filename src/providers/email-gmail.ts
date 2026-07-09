@@ -45,9 +45,9 @@ export class GmailEmailProvider implements Provider {
     const body = new URLSearchParams({
       refresh_token: this.providerConfig.refreshToken,
       client_id: this.providerConfig.clientId,
-      client_secret: this.providerConfig.clientSecret,
       grant_type: 'refresh_token'
     });
+    if (this.providerConfig.clientSecret) body.set('client_secret', this.providerConfig.clientSecret);
 
     const response = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
