@@ -34,6 +34,38 @@ agent-gate enforces a **structural** control plane that no amount of prompt inje
 3. You tap **Approve** or **Deny**.
 4. If approved, a deterministic script executes exactly what you reviewed — no AI involved.
 
+## Requirements for the Security Model to Hold
+
+agent-gate is only a **hard security boundary** when these requirements are true:
+
+| Requirement | Why it matters |
+|-------------|----------------|
+| agent-gate runs as a separate OS user | Prevents the AI agent process from reading/modifying pending or approved drafts |
+| The agent has write-only access to the inbox | The agent can propose drafts but cannot list, read, edit, delete, or replace drafts after submission |
+| Send credentials live only in agent-gate | If the agent also has SMTP/Gmail/Zoho send credentials, it can bypass the gate |
+| The approval bot token is not available to the agent | Prevents the agent from approving its own drafts |
+| `security.enforceProductionPermissions: true` in production | Fails closed if the write-only inbox/private state directories are misconfigured |
+| Humans review the actual outbound payload | The approval decision is about the concrete email/webhook body, recipients, provider, and context |
+
+If you run agent-gate and your agent as the same Unix user, or give the agent direct send credentials, agent-gate is still useful as an approval workflow — but it is **not** a structural security boundary.
+
+See [docs/deployment.md](docs/deployment.md) for the production filesystem setup and [docs/hermes.md](docs/hermes.md) for Hermes-specific integration.
+
+## How This Differs from Hermes Built-In Approval
+
+Hermes Agent already has useful approval controls for tool and command risk. agent-gate is complementary, not a replacement.
+
+| Capability | Hermes built-in approval | agent-gate |
+|------------|--------------------------|------------|
+| Primary approval target | Tool calls / shell commands | Exact outbound payloads |
+| Typical question | “Should this command/tool run?” | “Should this exact email/webhook be sent?” |
+| Final executor | Hermes tool runtime | Separate deterministic service |
+| Send credentials | May live in Hermes if configured | Live only in agent-gate |
+| Best for | Dangerous local commands, tool use, operational actions | Email, replies, webhooks, API calls, external side effects |
+| Security shape | Tool-level/behavioral approval | Payload-level structural boundary |
+
+For example, Hermes approval can help decide whether a risky command should run. agent-gate is for a different problem: Hermes drafts an email, but a separate process with separate credentials sends only the exact payload a human approved.
+
 ## Security Model
 
 This isn't "we told the AI to be careful." It's structural:

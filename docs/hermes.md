@@ -15,6 +15,40 @@ NO approval bot token                owns Telegram approval bot
 
 This makes prompt injection less dangerous: an email can influence what Hermes drafts, but it cannot make Hermes send because Hermes has no send credentials and no approval channel.
 
+## Hermes Built-In Approval vs agent-gate
+
+Hermes has its own approval controls for risky tool use and shell commands. Those controls are valuable, but they answer a different question than agent-gate.
+
+| Question | Use Hermes built-in approval | Use agent-gate |
+|----------|------------------------------|----------------|
+| “Should this command/tool run?” | ✅ | Not the main job |
+| “Should this exact email/reply/webhook be sent?” | Behavioral only | ✅ |
+| “Can the agent bypass the approval if it has send credentials?” | Yes, if those credentials/tools exist | No, if credentials live only in agent-gate |
+| “Is approval tied to a concrete payload hash?” | No general email-payload boundary | ✅ full hash + nonce |
+| “Does a separate process execute the final send?” | Usually no | ✅ |
+
+So the safe Hermes pattern is:
+
+```text
+Hermes approval: local/risky tool operation approval
+agent-gate: external outbound payload approval
+```
+
+They work together. agent-gate is not replacing Hermes approval; it adds a structural send boundary for prompt-injection-sensitive outbound actions.
+
+## Hard Requirements
+
+For Hermes + agent-gate to be a hard boundary:
+
+- Hermes and agent-gate must run as different OS users.
+- Hermes should only have write-only inbox access through the `agentgate-inbox` group.
+- Hermes must not have Gmail/Zoho/SMTP send credentials.
+- Hermes must not have the agent-gate Telegram bot token.
+- agent-gate should run with `security.enforceProductionPermissions: true`.
+- Production directory permissions should match `docs/deployment.md`.
+
+If these are not true, agent-gate still provides a useful review UX, but Hermes may be able to bypass it.
+
 ## Install the Skill
 
 Copy or symlink this repo's `skill/` directory into Hermes:

@@ -4,11 +4,26 @@ This guide walks through deploying agent-gate with full process isolation. By th
 
 ## Overview
 
-| Component | Runs As | Can Do |
-|-----------|---------|--------|
-| AI Agent | `your-user` | Write files to inbox (only) |
-| agent-gate | `agentgate` | Read inbox, send previews, execute approved drafts |
-| Telegram Bot | (part of agent-gate) | Receive approve/deny from authorized humans |
+Production deployment has one goal: the agent can submit drafts, but cannot approve, alter, inspect, or send them.
+
+### Minimum Production Requirements
+
+- Separate Unix service user for agent-gate, for example `agentgate`.
+- Dedicated inbox group, for example `agentgate-inbox`.
+- Inbox mode `1730`, owned by `agentgate:agentgate-inbox`.
+- Internal state directories (`pending`, `approved`, `sent`, `denied`, `failed`) mode `0700`, owned by `agentgate:agentgate`.
+- Provider send credentials readable only by `agentgate`.
+- Telegram approval bot token readable only by `agentgate`.
+- Agent/Hermes user added only to `agentgate-inbox`, **not** to the `agentgate` group.
+- `security.enforceProductionPermissions: true` in config.
+
+If any of these are skipped, agent-gate may still work, but it is no longer enforcing the full structural boundary.
+
+| Component | Runs As | Can Do | Must Not Be Able To Do |
+|-----------|---------|--------|-------------------------|
+| AI Agent / Hermes | `your-user` | Write files to inbox only | Read/list inbox, read pending/approved/sent, access send credentials, access approval bot token |
+| agent-gate | `agentgate` | Read inbox, send previews, execute approved drafts | Run arbitrary agent code |
+| Telegram Bot | part of `agentgate` service | Receive approve/deny from authorized humans | Expose token to the agent |
 
 ## Phase 1 — Create Service User
 
