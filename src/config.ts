@@ -26,12 +26,21 @@ const SecurityConfigSchema = z.object({
 const ProviderSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('log-only'), fromAddress: z.string().email().optional() }),
   z.object({
+    type: z.literal('email-gmail'),
+    clientId: z.string().min(1),
+    clientSecret: z.string().min(1),
+    refreshToken: z.string().min(1),
+    fromAddress: z.string().email(),
+    displayName: z.string().optional()
+  }),
+  z.object({
     type: z.literal('email-zoho'),
     clientId: z.string().min(1),
     clientSecret: z.string().min(1),
     refreshToken: z.string().min(1),
     accountId: z.string().min(1),
-    fromAddress: z.string().email()
+    fromAddress: z.string().email(),
+    displayName: z.string().optional()
   })
 ]);
 

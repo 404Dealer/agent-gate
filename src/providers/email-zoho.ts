@@ -9,11 +9,21 @@ interface ZohoTokenResponse {
 const statusMessage = (prefix: string, status: number, statusText: string): string =>
   `${prefix}: ${status} ${statusText || 'Unknown error'}`;
 
+const escapeHeaderValue = (value: string): string => value.replace(/[\r\n]+/g, ' ').trim();
+
+const formatMailbox = (email: string, displayName?: string): string => {
+  const cleanEmail = escapeHeaderValue(email);
+  const cleanName = displayName ? escapeHeaderValue(displayName) : '';
+  if (!cleanName) return cleanEmail;
+  const quotedName = cleanName.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `"${quotedName}" <${cleanEmail}>`;
+};
+
 export class ZohoEmailProvider implements Provider {
   constructor(private readonly providerConfig: Extract<ProviderConfig, { type: 'email-zoho' }>) {}
 
   describeSender(): string {
-    return this.providerConfig.fromAddress;
+    return formatMailbox(this.providerConfig.fromAddress, this.providerConfig.displayName);
   }
 
   private async getAccessToken(): Promise<string> {

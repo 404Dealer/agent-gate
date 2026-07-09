@@ -59,7 +59,7 @@ Preferred path from Hermes:
   'recipient@example.com' \
   'Subject line' \
   '<p>HTML body</p>' \
-  'zoho' \
+  'gmail' \
   'User asked me to follow up after our call' \
   'hermes-agent'
 ```
@@ -76,7 +76,7 @@ The helper uses `sg agentgate-inbox` to drop the file into `/opt/agent-gate/draf
   "createdAt": "ISO-8601",
   "updatedAt": "ISO-8601",
   "source": "hermes-agent",
-  "provider": "zoho",
+  "provider": "gmail",
   "payload": {
     "from": "ignored@example.com",
     "to": "recipient@example.com",
@@ -98,6 +98,7 @@ Rules:
 
 - `id` must be UUID v4. Generate with `cat /proc/sys/kernel/random/uuid`.
 - `status` must be `pending`.
+- `provider` should be a configured provider key, commonly `gmail`, `zoho`, or `log`.
 - `from` is accepted for compatibility but ignored by agent-gate; the configured provider sender is shown in the approval preview and used for execution.
 - `body` supports HTML and is limited to 256KB by schema.
 - Long/truncated previews are deny-only by default unless the operator explicitly opts into `approval.allowTruncatedApproval`.

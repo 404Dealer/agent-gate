@@ -112,8 +112,16 @@ AGENTGATE_GPG_FPR=$(sudo -u agentgate gpg --list-keys --with-colons | awk -F: '/
 sudo -u agentgate bash -c "pass init $AGENTGATE_GPG_FPR"
 
 # Insert your secrets
+# Required for every deployment:
 echo "your-bot-token" | sudo -u agentgate pass insert -e agent-gate/telegram-bot-token
-echo "your-client-id" | sudo -u agentgate pass insert -e agent-gate/zoho-client-id
+
+# Gmail provider secrets, if using email-gmail:
+echo "your-google-client-id" | sudo -u agentgate pass insert -e agent-gate/google-client-id
+echo "your-google-client-secret" | sudo -u agentgate pass insert -e agent-gate/google-client-secret
+echo "your-google-refresh-token" | sudo -u agentgate pass insert -e agent-gate/google-refresh-token
+
+# Zoho provider secrets, if using email-zoho:
+echo "your-zoho-client-id" | sudo -u agentgate pass insert -e agent-gate/zoho-client-id
 # ... etc
 ```
 
@@ -132,6 +140,14 @@ watch:
   pollIntervalMs: 2000
 
 providers:
+  gmail:
+    type: "email-gmail"
+    clientId: "${PASS:agent-gate/google-client-id}"
+    clientSecret: "${PASS:agent-gate/google-client-secret}"
+    refreshToken: "${PASS:agent-gate/google-refresh-token}"
+    fromAddress: "you@gmail.com"
+    displayName: "Your Name"
+
   zoho:
     type: "email-zoho"
     clientId: "${PASS:agent-gate/zoho-client-id}"
@@ -144,7 +160,7 @@ providers:
     type: "log-only"
 
 defaults:
-  provider: "zoho"
+  provider: "gmail"
   timezone: "America/Chicago"
   autoDeleteAfterDays: 30
 

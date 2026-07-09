@@ -17,6 +17,14 @@ security:
   enforceProductionPermissions: false
 
 providers:
+  gmail:
+    type: "email-gmail"
+    clientId: "${GOOGLE_CLIENT_ID}"
+    clientSecret: "${GOOGLE_CLIENT_SECRET}"
+    refreshToken: "${GOOGLE_REFRESH_TOKEN}"
+    fromAddress: "you@gmail.com"
+    displayName: "Your Name"
+
   zoho:
     type: "email-zoho"
     clientId: "${ZOHO_CLIENT_ID}"

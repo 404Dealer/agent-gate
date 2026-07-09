@@ -168,6 +168,14 @@ security:
   enforceProductionPermissions: false # Set true after applying docs/deployment.md
 
 providers:
+  gmail:
+    type: "email-gmail"
+    clientId: "${GOOGLE_CLIENT_ID}"
+    clientSecret: "${GOOGLE_CLIENT_SECRET}"
+    refreshToken: "${GOOGLE_REFRESH_TOKEN}"
+    fromAddress: "you@gmail.com"
+    displayName: "Your Name"
+
   zoho:
     type: "email-zoho"
     clientId: "${ZOHO_CLIENT_ID}"
@@ -205,6 +213,18 @@ Config placeholders support two resolvers:
 ### `log-only`
 
 Dry-run provider. Logs the payload to stdout, sends nothing. Use for testing and development.
+
+### `email-gmail`
+
+Sends email via the [Gmail API](https://developers.google.com/gmail/api/reference/rest/v1/users.messages/send) using OAuth refresh token flow. The OAuth client needs the `https://www.googleapis.com/auth/gmail.send` scope.
+
+| Config Key | Description |
+|------------|-------------|
+| `clientId` | Google Cloud OAuth Desktop/Web client ID |
+| `clientSecret` | Google Cloud OAuth client secret |
+| `refreshToken` | OAuth refresh token with Gmail send scope |
+| `fromAddress` | Enforced sender address or configured Gmail send-as alias |
+| `displayName` | Optional display name shown in From header |
 
 ### `email-zoho`
 
@@ -288,9 +308,10 @@ agent-gate/
 │   ├── executor.ts       # Reads approved drafts, dispatches to providers
 │   ├── schema.ts         # Zod schemas + validation
 │   └── providers/
-│       ├── index.ts      # Provider registry
-│       ├── email-zoho.ts # Zoho Mail API
-│       └── log-only.ts   # Dry-run logger
+│       ├── index.ts       # Provider registry
+│       ├── email-gmail.ts # Gmail API
+│       ├── email-zoho.ts  # Zoho Mail API
+│       └── log-only.ts    # Dry-run logger
 ├── drafts/               # Draft queue directories
 │   ├── inbox/            # Public dropbox (agents write here)
 │   ├── pending/          # Internal (watcher moves files here)
@@ -313,6 +334,7 @@ agent-gate/
 - ✅ File-based draft queue (inbox → pending → approved → sent)
 - ✅ Telegram bot with inline approve/deny buttons
 - ✅ SHA-256 hash-verified approvals with nonce-bound callbacks
+- ✅ Gmail email provider
 - ✅ Zoho Mail email provider
 - ✅ Log-only dry-run provider
 - ✅ `${PASS:key}` and `${ENV}` secret resolvers
@@ -326,7 +348,6 @@ agent-gate/
 ### Planned
 
 - [ ] Edit flow — modify drafts in Telegram before approving
-- [ ] Gmail provider
 - [ ] Generic SMTP provider
 - [ ] Webhook provider (for non-email actions: Slack, Discord, APIs)
 - [ ] Bulk approve/deny
