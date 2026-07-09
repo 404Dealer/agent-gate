@@ -20,7 +20,7 @@ The production helper:
 - stops the callback listener after one successful or denied callback;
 - validates returned scopes and authenticated mailbox identity;
 - sends secrets to `pass` over child-process stdin, with a 30-second timeout;
-- writes only `${PASS:...}` references and safe metadata to `config.yaml`;
+- writes only versioned `${PASS:...}` references and safe metadata to `config.yaml`;
 - atomically preserves private `0600` configuration;
 - never prints authorization codes, access tokens, or refresh tokens;
 - restarts `agent-gate` only after all persistence succeeds.

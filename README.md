@@ -256,12 +256,14 @@ A production installation can acquire provider refresh tokens without giving the
 
 ```bash
 # Human-controlled terminal only
+sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
+# Then authorize one email provider:
 sudo /opt/agent-gate/scripts/oauth-setup.sh gmail
 sudo /opt/agent-gate/scripts/oauth-setup.sh outlook
 sudo /opt/agent-gate/scripts/oauth-setup.sh zoho
 ```
 
-The helper drops privileges to `agentgate` with a clean environment, uses state-bound PKCE browser authorization, writes tokens directly to the encrypted password store, atomically updates private config with `${PASS:...}` references, and restarts the service. Gmail, Outlook, and Zoho use SSH-forwarded loopback callbacks by default. Outlook device authorization is available only as an explicit `--device-code` fallback.
+The approval-bot token must exist first because the OAuth wrapper restarts the service after a successful commit. The helper drops privileges to `agentgate` with a clean environment, uses state-bound PKCE browser authorization, writes tokens directly to the encrypted password store, atomically updates private config with versioned `${PASS:...}` references, and restarts the service. Gmail, Outlook, and Zoho use SSH-forwarded loopback callbacks by default. Outlook device authorization is available only as an explicit `--device-code` fallback.
 
 See **[docs/oauth-onboarding.md](docs/oauth-onboarding.md)** for provider registration and exact commands.
 

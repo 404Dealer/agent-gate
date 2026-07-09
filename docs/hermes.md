@@ -76,7 +76,13 @@ sudo scripts/install-production.sh \
   --telegram-user-id 2061243435
 ```
 
-Example provider authorization commands the operator should run personally:
+Store the separate Telegram approval-bot token first; the OAuth helper restarts the service after onboarding:
+
+```bash
+sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
+```
+
+Then run one provider authorization command personally:
 
 ```bash
 sudo /opt/agent-gate/scripts/oauth-setup.sh gmail
@@ -84,12 +90,6 @@ sudo /opt/agent-gate/scripts/oauth-setup.sh gmail
 sudo /opt/agent-gate/scripts/oauth-setup.sh outlook
 # or
 sudo /opt/agent-gate/scripts/oauth-setup.sh zoho
-```
-
-The separate Telegram approval-bot token still uses the human-only manual helper:
-
-```bash
-sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
 ```
 
 Do not paste Gmail/Zoho/Outlook refresh tokens, SMTP passwords, API keys, or the agent-gate approval bot token into Hermes. Hermes can verify that secret references exist, but it should not print or receive their values.
