@@ -30,6 +30,21 @@ No password/secret command-line options exist.
 USAGE
 }
 
+validate_trusted_path() {
+  local directory owner mode permissions
+  local -a directories=()
+  IFS=':' read -r -a directories <<< "$TRUSTED_PATH"
+  for directory in "${directories[@]}"; do
+    [[ -d "$directory" ]] || continue
+    read -r owner mode < <(/usr/bin/stat -Lc '%U %a' -- "$directory")
+    permissions=$((8#$mode))
+    if [[ "$owner" != "root" ]] || (( (permissions & 8#022) != 0 )); then
+      echo "Refusing untrusted executable path directory: $directory" >&2
+      return 1
+    fi
+  done
+}
+
 assert_trusted_ancestor_chain() {
   local current="$1" owner mode permissions
   while [[ "$current" != "/" ]]; do
@@ -69,6 +84,7 @@ if [[ $# -lt 1 ]]; then
   usage >&2
   exit 2
 fi
+validate_trusted_path
 assert_trusted_ancestor_chain "$SCRIPT_PATH"
 if ! /usr/bin/id -- "$SERVICE_USER" >/dev/null 2>&1; then
   echo "Missing service user: $SERVICE_USER" >&2
@@ -80,6 +96,10 @@ if ! NODE_BIN="$(resolve_trusted_executable node)"; then
 fi
 if ! RUNUSER_BIN="$(resolve_trusted_executable runuser)"; then
   echo "A trusted root-owned runuser executable is required on the fixed system PATH." >&2
+  exit 1
+fi
+if ! PASS_BIN="$(resolve_trusted_executable pass)"; then
+  echo "A trusted root-owned pass executable is required on the fixed system PATH." >&2
   exit 1
 fi
 if ! ENV_BIN="$(resolve_trusted_executable env)"; then
@@ -112,6 +132,7 @@ fi
   TERM="dumb" \
   GNUPGHOME="/home/$SERVICE_USER/.gnupg" \
   PASSWORD_STORE_DIR="/home/$SERVICE_USER/.password-store" \
+  AGENT_GATE_PASS_BIN="$PASS_BIN" \
   "$NODE_BIN" "$INSTALL_DIR/dist/smtp-setup.js" "$@" --config "$CONFIG_PATH"
 
 "$SYSTEMCTL_BIN" restart "$SERVICE_NAME"
@@ -134,4 +155,4 @@ if (( healthy_checks < required_consecutive )); then
   exit 1
 fi
 
-echo "$SERVICE_NAME restarted successfully. The App Password was never exposed to the invoking user or Hermes."
+echo "$SERVICE_NAME restarted successfully. The App Password was not printed or exposed to Hermes."

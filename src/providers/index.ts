@@ -7,8 +7,12 @@ import { SmtpEmailProvider } from './email-smtp.js';
 import { ZohoEmailProvider } from './email-zoho.js';
 
 export interface ProviderResult {
+  outcome?: 'sent' | 'partial';
   providerMessageId?: string;
   details?: string;
+  acceptedCount?: number;
+  rejectedCount?: number;
+  rejectedRecipients?: string[];
 }
 
 export interface Provider {

@@ -1,7 +1,7 @@
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
-import { resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
 
@@ -43,7 +43,8 @@ const ProviderSchema = z.discriminatedUnion('type', [
     username: z.string().min(1),
     password: z.string().min(1),
     fromAddress: z.string().email(),
-    displayName: z.string().optional()
+    displayName: z.string().optional(),
+    allowFromAlias: z.boolean().default(false)
   }),
   z.object({
     type: z.literal('email-gmail'),
@@ -91,12 +92,21 @@ const ConfigSchema = z.object({
     enabled: z.boolean().default(true),
     logFile: z.string().default('./audit.log')
   })
+}).superRefine((config, context) => {
+  for (const [name, provider] of Object.entries(config.providers)) {
+    if (provider.type !== 'email-smtp' || provider.allowFromAlias) continue;
+    if (provider.username.trim().toLowerCase() !== provider.fromAddress.toLowerCase()) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['providers', name, 'fromAddress'],
+        message: 'SMTP fromAddress must match username unless allowFromAlias is explicitly true'
+      });
+    }
+  }
 });
 
 export type AgentGateConfig = z.infer<typeof ConfigSchema>;
 export type ProviderConfig = z.infer<typeof ProviderSchema>;
-
-const shellEscape = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
 
 function resolvePlaceholder(name: string): string {
   if (name.startsWith('PASS:')) {
@@ -106,7 +116,11 @@ function resolvePlaceholder(name: string): string {
     }
 
     try {
-      return execSync(`pass show ${shellEscape(key)}`, { encoding: 'utf8' }).trimEnd();
+      const passExecutable = process.env.AGENT_GATE_PASS_BIN ?? 'pass';
+      if (process.env.AGENT_GATE_PASS_BIN && !isAbsolute(passExecutable)) {
+        throw new Error('Configured pass executable must be absolute');
+      }
+      return execFileSync(passExecutable, ['show', key], { encoding: 'utf8' }).trimEnd();
     } catch {
       throw new Error(`Unresolved placeholder: \${${name}}`);
     }

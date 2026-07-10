@@ -152,8 +152,10 @@ if [[ "$INSTALL_DIR" == "$SOURCE_DIR" ]]; then
   exit 2
 fi
 
-if ! NODE_BIN="$(resolve_trusted_executable node)" || ! NPM_BIN="$(resolve_trusted_executable npm)"; then
-  echo "Trusted root-owned node and npm executables are required on the fixed system PATH." >&2
+if ! NODE_BIN="$(resolve_trusted_executable node)" \
+  || ! NPM_BIN="$(resolve_trusted_executable npm)" \
+  || ! PASS_BIN="$(resolve_trusted_executable pass)"; then
+  echo "Trusted root-owned node, npm, and pass executables are required on the fixed system PATH." >&2
   exit 1
 fi
 NODE_MAJOR="$("$NODE_BIN" -p 'Number(process.versions.node.split(".")[0])')"
@@ -430,6 +432,7 @@ Group=$SERVICE_GROUP
 WorkingDirectory=$INSTALL_DIR
 ExecStart=$NODE_BIN $INSTALL_DIR/dist/index.js
 Environment=AGENT_GATE_CONFIG=$CONFIG_DIR/config.yaml
+Environment=AGENT_GATE_PASS_BIN=$PASS_BIN
 Environment=PASSWORD_STORE_DIR=/home/$SERVICE_USER/.password-store
 Environment=GNUPGHOME=/home/$SERVICE_USER/.gnupg
 Restart=on-failure

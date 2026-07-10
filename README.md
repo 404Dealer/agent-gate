@@ -306,10 +306,11 @@ Sends through an authenticated SMTP server with mandatory certificate-verified T
 | `tlsMode` | `implicit` or `starttls` |
 | `username` | SMTP authentication username |
 | `password` | SMTP/App Password; use a `${PASS:...}` reference in production |
-| `fromAddress` | Enforced sender address; draft `from` is ignored |
+| `fromAddress` | Enforced sender address; draft `from` is ignored. Must match `username` by default. |
+| `allowFromAlias` | Optional explicit opt-in for an operator-verified sender alias or non-email SMTP username; default `false` |
 | `displayName` | Optional display name shown in approval preview and From header |
 
-The transport uses fixed connection/greeting/socket timeouts, disables file and URL access, redacts provider errors, and treats partial SMTP acceptance as completed-with-warning so an automatic retry cannot duplicate already accepted recipients.
+The transport uses fixed connection/greeting/socket timeouts, disables file and URL access, and redacts provider errors. Partial SMTP acceptance is archived as non-retryable `sent` state, recorded as `partial` in audit, and shown to the operator as an explicit Telegram warning with accepted/rejected counts and safe rejected addresses. This prevents automatic retry from duplicating delivery to already accepted recipients.
 
 ### `email-gmail`
 

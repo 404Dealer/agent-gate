@@ -23,9 +23,9 @@ const withOnboardingLock = async <T>(configPath: string, operation: () => Promis
     );
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-      throw new Error('OAuth onboarding is already in progress for this config');
+      throw new Error('Provider onboarding is already in progress for this config');
     }
-    throw new Error('Could not acquire the OAuth onboarding lock');
+    throw new Error('Could not acquire the provider onboarding lock');
   }
 
   try {

@@ -110,12 +110,23 @@ providers:
     displayName: Your Name
 ```
 
+By default, `fromAddress` must match `username` case-insensitively. If the SMTP server uses a non-email login or the operator has independently verified a permitted sender alias, set `allowFromAlias: true` explicitly. Server-side rewriting can still change the final sender, so test aliases before production use.
+
 Allowed TLS modes:
 
 - `implicit`: TLS from connection start, commonly port `465`;
 - `starttls`: plaintext connection upgraded with **required** STARTTLS, commonly port `587`.
 
 Unencrypted SMTP is not supported. Certificate verification is always enabled. The Gmail setup helper currently uses only the fixed Gmail preset; custom SMTP metadata must be configured manually by the human operator.
+
+## Partial recipient delivery
+
+SMTP can accept some approved recipients while rejecting others. Agent-gate treats this as a non-retryable partial result:
+
+- the draft is archived under `sent`, not `failed`, because retrying could duplicate delivery;
+- audit records action `partial`, accepted/rejected counts, and rejected addresses only when they match the approved recipient list;
+- Telegram displays an explicit partial-delivery alert and reply; and
+- the operator should create a new draft only for rejected recipients after confirming the original outcome.
 
 ## Revocation
 

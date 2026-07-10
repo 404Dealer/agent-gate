@@ -189,6 +189,46 @@ audit:
   }
 });
 
+test('config requires explicit operator opt-in when SMTP sender differs from authenticated username', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-smtp-alias-'));
+  try {
+    const configPath = join(dir, 'config.yaml');
+    const render = (allowAlias: boolean): string => `
+telegram:
+  botToken: token
+  allowedUsers: [2061243435]
+watch:
+  directory: ./drafts/inbox
+providers:
+  smtp:
+    type: email-smtp
+    host: smtp.example.com
+    port: 465
+    tlsMode: implicit
+    username: authenticated@example.com
+    password: app-password
+    fromAddress: alias@example.com
+${allowAlias ? '    allowFromAlias: true\n' : ''}defaults:
+  provider: smtp
+  timezone: UTC
+audit:
+  enabled: true
+  logFile: ./audit.log
+`;
+    await writeFile(configPath, render(false), 'utf8');
+    await assert.rejects(() => loadConfig(configPath), /allowFromAlias/);
+
+    await writeFile(configPath, render(true), 'utf8');
+    const config = await loadConfig(configPath);
+    assert.equal(config.providers.smtp.type, 'email-smtp');
+    if (config.providers.smtp.type === 'email-smtp') {
+      assert.equal(config.providers.smtp.allowFromAlias, true);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('smtp provider requires STARTTLS when configured', async () => {
   let transportOptions: SmtpTransportOptions | undefined;
   const provider = new SmtpEmailProvider({
@@ -256,7 +296,7 @@ test('smtp provider replaces transport failures with a fixed redacted error', as
   });
 });
 
-test('smtp provider reports partial recipient acceptance as success to prevent duplicate retry', async () => {
+test('smtp provider returns a structured partial outcome to prevent duplicate retry', async () => {
   const provider = new SmtpEmailProvider({
     type: 'email-smtp',
     host: 'smtp.gmail.com',
@@ -274,8 +314,12 @@ test('smtp provider reports partial recipient acceptance as success to prevent d
   }));
 
   assert.deepEqual(await provider.send(sampleDraft()), {
+    outcome: 'partial',
     providerMessageId: '<partial@example.com>',
-    details: 'Email accepted by SMTP for 1 recipient; 1 rejected'
+    details: 'Email accepted by SMTP for 1 recipient; 1 rejected',
+    acceptedCount: 1,
+    rejectedCount: 1,
+    rejectedRecipients: ['cc@example.com']
   });
 });
 

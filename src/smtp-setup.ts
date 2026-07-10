@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { realpathSync } from 'node:fs';
 import { lstat } from 'node:fs/promises';
+import { isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { validateProviderConfigTarget } from './oauth/config-writer.js';
@@ -23,6 +24,14 @@ const usage = (): string => `Usage: agent-gate-smtp-setup gmail [--config PATH]
 Interactive Gmail App Password onboarding over authenticated SMTP/TLS.
 Run this only through scripts/smtp-setup.sh from a human-controlled SSH/local terminal.
 Secrets are never accepted as command-line arguments.`;
+
+export function resolveSmtpPassExecutable(env: NodeJS.ProcessEnv): string {
+  const executable = env.AGENT_GATE_PASS_BIN;
+  if (!executable || !isAbsolute(executable)) {
+    throw new Error('SMTP setup requires a trusted absolute pass executable from the production wrapper');
+  }
+  return executable;
+}
 
 async function assertSecureRuntime(configPath: string): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -54,6 +63,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   const options = parseSmtpSetupArgs(args);
   await assertSecureRuntime(options.configPath);
   await validateProviderConfigTarget(options.configPath);
+  const passExecutable = resolveSmtpPassExecutable(process.env);
 
   console.log('\nGmail App Password SMTP onboarding');
   console.log('Prerequisite: enable Google 2-Step Verification, then create a dedicated App Password.');
@@ -73,7 +83,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 
     await persistSmtpOnboarding({
       configPath: options.configPath,
-      store: new PassSecretStore(),
+      store: new PassSecretStore({ executable: passExecutable }),
       providerName: 'gmail-smtp',
       host: 'smtp.gmail.com',
       port: 465,

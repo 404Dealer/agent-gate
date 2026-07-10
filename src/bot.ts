@@ -5,7 +5,7 @@ import { basename, resolve } from 'node:path';
 import type { AgentGateConfig } from './config.js';
 import type { DraftWatcher } from './watcher.js';
 import { DraftSchema, updateStatus, type Draft } from './schema.js';
-import { Executor } from './executor.js';
+import { Executor, type ExecutionResult } from './executor.js';
 
 export interface ApprovalPreviewOptions {
   configuredSender: string;
@@ -26,6 +26,34 @@ export interface ApprovalTokenRecord {
   fileName: string;
   hash: string;
   expiresAt: number;
+}
+
+export interface DeliveryNotification {
+  callbackText: string;
+  showAlert: boolean;
+  replyText?: string;
+}
+
+const countLabel = (count: number): string => count === 1 ? 'recipient' : 'recipients';
+
+export function buildDeliveryNotification(result: ExecutionResult): DeliveryNotification {
+  if (result.outcome !== 'partial') {
+    return { callbackText: '✅ Sent successfully!', showAlert: false };
+  }
+
+  const accepted = result.acceptedCount ?? 0;
+  const rejected = result.rejectedCount ?? 0;
+  const rejectedRecipients = result.rejectedRecipients ?? [];
+  const shownRecipients = rejectedRecipients.slice(0, 10);
+  const remaining = Math.max(0, rejectedRecipients.length - shownRecipients.length);
+  const rejectedDetail = shownRecipients.length > 0
+    ? ` (${shownRecipients.join(', ')}${remaining > 0 ? `, and ${remaining} more` : ''})`
+    : '';
+  return {
+    callbackText: '⚠️ Partial delivery',
+    showAlert: true,
+    replyText: `⚠️ Partial delivery: ${accepted} ${countLabel(accepted)} accepted; ${rejected} rejected${rejectedDetail}. The draft is archived as sent. Do not retry automatically because accepted recipients may receive duplicates.`
+  };
 }
 
 const APPROVAL_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
@@ -209,8 +237,13 @@ export class AgentGateBot {
         await ctx.editMessageText(`${originalText}\n\n✅ APPROVED at ${timestamp}`).catch(() => {});
 
         try {
-          await this.executor.executeApprovedDraft(approvedPath);
-          await ctx.answerCallbackQuery({ text: '✅ Sent successfully!' });
+          const result = await this.executor.executeApprovedDraft(approvedPath);
+          const notification = buildDeliveryNotification(result);
+          if (notification.replyText) await ctx.reply(notification.replyText);
+          await ctx.answerCallbackQuery({
+            text: notification.callbackText,
+            show_alert: notification.showAlert
+          });
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
           await ctx.reply(`⚠️ Approved but send failed: ${errMsg}`);

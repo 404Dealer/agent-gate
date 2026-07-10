@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { lstat, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import YAML from 'yaml';
@@ -8,6 +9,7 @@ import { persistSmtpOnboarding } from '../src/oauth/persist.js';
 import { parseSmtpSetupArgs } from '../src/smtp/cli-options.js';
 import { normalizeGmailAppPassword } from '../src/smtp/normalize.js';
 import { verifyGmailSmtpCredentials } from '../src/smtp/verify.js';
+import { resolveSmtpPassExecutable } from '../src/smtp-setup.js';
 import type { SmtpTransportOptions } from '../src/providers/email-smtp.js';
 
 test('production SMTP wrapper enforces TTY, trusted install paths, privilege drop, and health checks', async () => {
@@ -17,7 +19,11 @@ test('production SMTP wrapper enforces TTY, trusted install paths, privilege dro
   assert.match(wrapper, /if \[\[ ! -t 0 \|\| ! -t 1 \]\]/);
   assert.match(wrapper, /if \[\[ \$EUID -ne 0 \]\]/);
   assert.match(wrapper, /assert_trusted_ancestor_chain/);
+  assert.match(wrapper, /validate_trusted_path/);
   assert.match(wrapper, /resolve_trusted_executable runuser/);
+  assert.match(wrapper, /resolve_trusted_executable pass/);
+  assert.match(wrapper, /AGENT_GATE_PASS_BIN="\$PASS_BIN"/);
+  assert(wrapper.indexOf('validate_trusted_path') < wrapper.indexOf('"$RUNUSER_BIN" -u'));
   assert.match(wrapper, /resolve_trusted_executable env/);
   assert.match(wrapper, /resolve_trusted_executable systemctl/);
   assert.match(wrapper, /resolve_trusted_executable sleep/);
@@ -26,11 +32,51 @@ test('production SMTP wrapper enforces TTY, trusted install paths, privilege dro
   assert.match(wrapper, /"\$SLEEP_BIN" 1/);
   assert.match(wrapper, /dist\/smtp-setup\.js/);
   assert.match(wrapper, /required_consecutive=3/);
+  assert.match(wrapper, /App Password was not printed or exposed to Hermes/);
+  assert.doesNotMatch(wrapper, /never exposed to the invoking user/);
   assert.doesNotMatch(wrapper, /--password|--app-password|SMTP_PASSWORD/);
 
   const installer = await readFile(new URL('../scripts/install-production.sh', import.meta.url), 'utf8');
   assert.match(installer, /"\$INSTALL_DIR\/scripts\/smtp-setup\.sh"/);
   assert.match(installer, /--exclude \/\.hermes\//);
+  assert.match(installer, /resolve_trusted_executable pass/);
+  assert.match(installer, /Environment=AGENT_GATE_PASS_BIN=\$PASS_BIN/);
+
+  const configSource = await readFile(new URL('../src/config.ts', import.meta.url), 'utf8');
+  assert.match(configSource, /execFileSync\(passExecutable, \['show', key\]/);
+  assert.doesNotMatch(configSource, /execSync\(`pass show/);
+});
+
+test('trusted PATH validation rejects an attacker-writable executable directory before child launch', async () => {
+  const wrapper = await readFile(new URL('../scripts/smtp-setup.sh', import.meta.url), 'utf8');
+  const functionSource = wrapper.match(/validate_trusted_path\(\) \{[\s\S]*?\n\}/)?.[0];
+  assert(functionSource, 'validate_trusted_path function not found');
+  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-untrusted-path-'));
+  try {
+    await chmod(dir, 0o777);
+    const result = spawnSync('/bin/bash', ['-c', [
+      'set -euo pipefail',
+      functionSource,
+      `TRUSTED_PATH=${JSON.stringify(dir)}`,
+      'validate_trusted_path'
+    ].join('\n')], { encoding: 'utf8' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing untrusted executable path directory/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('SMTP setup requires an absolute pass executable selected by the trusted wrapper', async () => {
+  assert.equal(resolveSmtpPassExecutable({ AGENT_GATE_PASS_BIN: '/usr/bin/pass' }), '/usr/bin/pass');
+  assert.throws(() => resolveSmtpPassExecutable({}), /trusted absolute pass executable/);
+  assert.throws(
+    () => resolveSmtpPassExecutable({ AGENT_GATE_PASS_BIN: 'pass' }),
+    /trusted absolute pass executable/
+  );
+
+  const source = await readFile(new URL('../src/smtp-setup.ts', import.meta.url), 'utf8');
+  assert.match(source, /new PassSecretStore\(\{ executable: passExecutable \}\)/);
 });
 
 test('SMTP setup CLI accepts only a Gmail preset and a non-secret config path', () => {

@@ -73,6 +73,30 @@ const formatMailbox = (email: string, displayName?: string): string => {
 
 const recipientLabel = (count: number): string => count === 1 ? 'recipient' : 'recipients';
 
+const approvedRecipients = (payload: {
+  to: string | string[];
+  cc?: string[];
+  bcc?: string[];
+}): string[] => [
+  ...(Array.isArray(payload.to) ? payload.to : [payload.to]),
+  ...(payload.cc ?? []),
+  ...(payload.bcc ?? [])
+];
+
+const safeRejectedRecipients = (payload: {
+  to: string | string[];
+  cc?: string[];
+  bcc?: string[];
+}, rejected: unknown): string[] => {
+  if (!Array.isArray(rejected)) return [];
+  const rejectedSet = new Set(
+    rejected
+      .filter((value): value is string => typeof value === 'string')
+      .map((value) => value.trim().toLowerCase())
+  );
+  return approvedRecipients(payload).filter((address) => rejectedSet.has(address.toLowerCase()));
+};
+
 export class SmtpEmailProvider implements Provider {
   private readonly transport: SmtpTransport;
 
@@ -130,6 +154,14 @@ export class SmtpEmailProvider implements Provider {
     const partial = rejectedCount > 0 ? `; ${rejectedCount} rejected` : '';
 
     return {
+      ...(rejectedCount > 0
+        ? {
+            outcome: 'partial' as const,
+            acceptedCount,
+            rejectedCount,
+            rejectedRecipients: safeRejectedRecipients(payload, info.rejected)
+          }
+        : {}),
       providerMessageId: messageId,
       details: `Email accepted by SMTP for ${acceptedCount} ${recipientLabel(acceptedCount)}${partial}`
     };
