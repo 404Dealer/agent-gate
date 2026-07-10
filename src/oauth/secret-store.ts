@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { isAbsolute } from 'node:path';
 
 interface PassSecretStoreOptions {
   executable?: string;
@@ -14,8 +15,12 @@ export class PassSecretStore {
   private readonly timeoutMs: number;
 
   constructor(options: PassSecretStoreOptions = {}) {
-    this.executable = options.executable ?? 'pass';
     this.env = options.env ?? process.env;
+    const configuredExecutable = options.executable ?? this.env.AGENT_GATE_PASS_BIN;
+    if (configuredExecutable !== undefined && !isAbsolute(configuredExecutable)) {
+      throw new Error('Configured password-store executable must be absolute');
+    }
+    this.executable = configuredExecutable ?? 'pass';
     this.timeoutMs = options.timeoutMs ?? 30_000;
     if (!Number.isInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 300_000) {
       throw new Error('Password-store timeout must be between 1 and 300000 milliseconds');

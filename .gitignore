@@ -12,3 +12,4 @@ drafts/failed/*.json
 # Internal development docs (not for public repo)
 PLAN.md
 ISOLATION-PLAN.md
+.hermes/

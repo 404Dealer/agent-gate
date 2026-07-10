@@ -1,6 +1,7 @@
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { isIP } from 'node:net';
+import { isAbsolute, resolve } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
 
@@ -23,8 +24,28 @@ const SecurityConfigSchema = z.object({
   enforceProductionPermissions: z.boolean().default(false)
 }).default({});
 
+const SmtpHostSchema = z.string().min(1).max(253).refine((value) => {
+  if (isIP(value) !== 0) return true;
+  const host = value.endsWith('.') ? value.slice(0, -1) : value;
+  if (!host) return false;
+  return host.split('.').every((label) =>
+    /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(label)
+  );
+}, 'Invalid SMTP host');
+
 const ProviderSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('log-only'), fromAddress: z.string().email().optional() }),
+  z.object({
+    type: z.literal('email-smtp'),
+    host: SmtpHostSchema,
+    port: z.number().int().min(1).max(65535),
+    tlsMode: z.enum(['implicit', 'starttls']),
+    username: z.string().trim().min(1),
+    password: z.string().min(1),
+    fromAddress: z.string().email(),
+    displayName: z.string().optional(),
+    allowFromAlias: z.boolean().default(false)
+  }),
   z.object({
     type: z.literal('email-gmail'),
     clientId: z.string().min(1),
@@ -71,12 +92,21 @@ const ConfigSchema = z.object({
     enabled: z.boolean().default(true),
     logFile: z.string().default('./audit.log')
   })
+}).superRefine((config, context) => {
+  for (const [name, provider] of Object.entries(config.providers)) {
+    if (provider.type !== 'email-smtp' || provider.allowFromAlias) continue;
+    if (provider.username.trim().toLowerCase() !== provider.fromAddress.toLowerCase()) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['providers', name, 'fromAddress'],
+        message: 'SMTP fromAddress must match username unless allowFromAlias is explicitly true'
+      });
+    }
+  }
 });
 
 export type AgentGateConfig = z.infer<typeof ConfigSchema>;
 export type ProviderConfig = z.infer<typeof ProviderSchema>;
-
-const shellEscape = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
 
 function resolvePlaceholder(name: string): string {
   if (name.startsWith('PASS:')) {
@@ -86,7 +116,11 @@ function resolvePlaceholder(name: string): string {
     }
 
     try {
-      return execSync(`pass show ${shellEscape(key)}`, { encoding: 'utf8' }).trimEnd();
+      const passExecutable = process.env.AGENT_GATE_PASS_BIN ?? 'pass';
+      if (process.env.AGENT_GATE_PASS_BIN && !isAbsolute(passExecutable)) {
+        throw new Error('Configured pass executable must be absolute');
+      }
+      return execFileSync(passExecutable, ['show', key], { encoding: 'utf8' }).trimEnd();
     } catch {
       throw new Error(`Unresolved placeholder: \${${name}}`);
     }

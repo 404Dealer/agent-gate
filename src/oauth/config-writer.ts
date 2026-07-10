@@ -41,15 +41,19 @@ export async function validateProviderConfigTarget(configPath: string): Promise<
   await loadPrivateConfigDocument(configPath);
 }
 
+export function validateProviderName(providerName: string): void {
+  if (!/^[a-z][a-z0-9-]*$/.test(providerName)) {
+    throw new Error('Invalid provider name');
+  }
+}
+
 export async function updateProviderConfig(
   configPath: string,
   providerName: string,
   providerConfig: Record<string, unknown>,
   setAsDefault: boolean
 ): Promise<void> {
-  if (!/^[a-z][a-z0-9-]*$/.test(providerName)) {
-    throw new Error('Invalid provider name');
-  }
+  validateProviderName(providerName);
 
   const document = await loadPrivateConfigDocument(configPath);
   document.setIn(['providers', providerName], providerConfig);

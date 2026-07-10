@@ -92,6 +92,7 @@ sync_application_tree() {
   local ownership="${1:-root:root}"
   rsync -a --delete --chown="$ownership" \
     --exclude /.git/ \
+    --exclude /.hermes/ \
     --exclude '/.rollback-*/' \
     --exclude /node_modules/ \
     --exclude /dist/ \
@@ -151,8 +152,10 @@ if [[ "$INSTALL_DIR" == "$SOURCE_DIR" ]]; then
   exit 2
 fi
 
-if ! NODE_BIN="$(resolve_trusted_executable node)" || ! NPM_BIN="$(resolve_trusted_executable npm)"; then
-  echo "Trusted root-owned node and npm executables are required on the fixed system PATH." >&2
+if ! NODE_BIN="$(resolve_trusted_executable node)" \
+  || ! NPM_BIN="$(resolve_trusted_executable npm)" \
+  || ! PASS_BIN="$(resolve_trusted_executable pass)"; then
+  echo "Trusted root-owned node, npm, and pass executables are required on the fixed system PATH." >&2
   exit 1
 fi
 NODE_MAJOR="$("$NODE_BIN" -p 'Number(process.versions.node.split(".")[0])')"
@@ -286,10 +289,12 @@ chown root:root "$INSTALL_DIR/scripts"
 chmod 755 "$INSTALL_DIR/scripts"
 chown root:root \
   "$INSTALL_DIR/scripts/oauth-setup.sh" \
+  "$INSTALL_DIR/scripts/smtp-setup.sh" \
   "$INSTALL_DIR/scripts/configure-provider-secrets.sh" \
   "$INSTALL_DIR/scripts/install-production.sh"
 chmod 755 \
   "$INSTALL_DIR/scripts/oauth-setup.sh" \
+  "$INSTALL_DIR/scripts/smtp-setup.sh" \
   "$INSTALL_DIR/scripts/configure-provider-secrets.sh" \
   "$INSTALL_DIR/scripts/install-production.sh"
 
@@ -427,6 +432,7 @@ Group=$SERVICE_GROUP
 WorkingDirectory=$INSTALL_DIR
 ExecStart=$NODE_BIN $INSTALL_DIR/dist/index.js
 Environment=AGENT_GATE_CONFIG=$CONFIG_DIR/config.yaml
+Environment=AGENT_GATE_PASS_BIN=$PASS_BIN
 Environment=PASSWORD_STORE_DIR=/home/$SERVICE_USER/.password-store
 Environment=GNUPGHOME=/home/$SERVICE_USER/.gnupg
 Restart=on-failure
