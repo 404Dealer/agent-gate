@@ -9,14 +9,19 @@ const sanitizeError = (error: unknown): string => {
   return message.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500);
 };
 
-export interface ExecutionResult {
-  outcome: 'sent' | 'partial';
+interface ExecutionResultBase {
   details: string;
-  acceptedCount?: number;
-  rejectedCount?: number;
-  rejectedRecipients?: string[];
   persistenceWarning?: boolean;
 }
+
+export type ExecutionResult =
+  | (ExecutionResultBase & { outcome: 'sent' })
+  | (ExecutionResultBase & {
+      outcome: 'partial';
+      acceptedCount: number;
+      rejectedCount: number;
+      rejectedRecipients: string[];
+    });
 
 export class Executor {
   private readonly providers: Record<string, Provider>;

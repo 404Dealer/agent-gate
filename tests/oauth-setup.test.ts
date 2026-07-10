@@ -733,6 +733,47 @@ test('pass secret store sends the secret through stdin and never command argumen
   }
 });
 
+test('pass secret store uses the pinned environment executable instead of PATH', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-pass-pinned-'));
+  try {
+    const pathDir = join(dir, 'path');
+    await mkdir(pathDir);
+    const pinnedExecutable = join(dir, 'pinned-pass');
+    const pathExecutable = join(pathDir, 'pass');
+    const markerPath = join(dir, 'selection.txt');
+    await writeFile(
+      pinnedExecutable,
+      '#!/bin/sh\nprintf pinned > "$FAKE_PASS_SELECTION"\nIFS= read -r _\n',
+      'utf8'
+    );
+    await writeFile(
+      pathExecutable,
+      '#!/bin/sh\nprintf path-search > "$FAKE_PASS_SELECTION"\nIFS= read -r _\n',
+      'utf8'
+    );
+    await chmod(pinnedExecutable, 0o700);
+    await chmod(pathExecutable, 0o700);
+
+    const store = new PassSecretStore({
+      env: {
+        AGENT_GATE_PASS_BIN: pinnedExecutable,
+        PATH: pathDir,
+        FAKE_PASS_SELECTION: markerPath
+      }
+    });
+    await store.set('agent-gate/outlook-refresh-token', 'rotation-value');
+    assert.equal(await readFile(markerPath, 'utf8'), 'pinned');
+
+    assert.throws(() => new PassSecretStore({ executable: 'pass' }), /must be absolute/);
+    assert.throws(
+      () => new PassSecretStore({ env: { AGENT_GATE_PASS_BIN: 'pass' } }),
+      /must be absolute/
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('pass secret store rejects terminal-control characters before spawning', async () => {
   const store = new PassSecretStore({ executable: '/bin/false' });
   await assert.rejects(

@@ -36,10 +36,12 @@ export interface DeliveryNotification {
 
 const countLabel = (count: number): string => count === 1 ? 'recipient' : 'recipients';
 
-const partialDeliverySummary = (result: ExecutionResult): string => {
-  const accepted = result.acceptedCount ?? 0;
-  const rejected = result.rejectedCount ?? 0;
-  const rejectedRecipients = result.rejectedRecipients ?? [];
+type PartialExecutionResult = Extract<ExecutionResult, { outcome: 'partial' }>;
+
+const partialDeliverySummary = (result: PartialExecutionResult): string => {
+  const accepted = result.acceptedCount;
+  const rejected = result.rejectedCount;
+  const rejectedRecipients = result.rejectedRecipients;
   const shownRecipients = rejectedRecipients.slice(0, 10);
   const remaining = Math.max(0, rejectedRecipients.length - shownRecipients.length);
   const rejectedDetail = shownRecipients.length > 0
