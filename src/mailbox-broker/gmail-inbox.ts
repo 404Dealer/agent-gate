@@ -5,7 +5,8 @@ import { buildGmailImapOptions } from '../mailbox/gmail-imap.js';
 import { decodeInboxReference, encodeInboxReference } from './reference.js';
 
 const MAX_MESSAGE_BYTES = 512 * 1024;
-const MAX_BODY_CHARS = 300_000;
+const MAX_BODY_BYTES = 256 * 1024;
+const MAX_LIST_SCAN_UIDS = 500;
 
 class SafeMailboxError extends Error {}
 
@@ -25,6 +26,12 @@ export interface InboxListItem {
   size: number | null;
 }
 
+export interface InboxListResult {
+  items: InboxListItem[];
+  scannedUidWindow: number;
+  truncated: boolean;
+}
+
 export interface InboxMessage extends InboxListItem {
   to: string[];
   cc: string[];
@@ -40,10 +47,13 @@ const cleanLine = (value: unknown, max = 500): string =>
     .trim()
     .slice(0, max);
 
-const cleanBody = (value: unknown): string =>
-  (typeof value === 'string' ? value : '')
-    .replace(/\u0000/g, '')
-    .slice(0, MAX_BODY_CHARS);
+const cleanBody = (value: unknown): string => {
+  const body = (typeof value === 'string' ? value : '').replace(/\u0000/g, '');
+  const encoded = Buffer.from(body, 'utf8');
+  return encoded.length <= MAX_BODY_BYTES
+    ? body
+    : encoded.subarray(0, MAX_BODY_BYTES).toString('utf8');
+};
 
 const addresses = (values: Array<{ name?: string; address?: string }> | undefined): string[] =>
   (values ?? []).slice(0, 50).map((entry) => {
@@ -111,27 +121,33 @@ export class GmailInboxBroker {
     }
   }
 
-  async list(unread: boolean, limit: number): Promise<InboxListItem[]> {
+  async list(unread: boolean, limit: number): Promise<InboxListResult> {
     return this.withClient(async (client) => {
-      const lock = await client.getMailboxLock('INBOX', { readOnly: true });
+      const lock = await client.getMailboxLock('INBOX', { readOnly: true, acquireTimeout: 10_000 });
       try {
         if (!client.mailbox) throw new Error('mailbox unavailable');
-        const found = await client.search(unread ? { seen: false } : { all: true }, { uid: true });
-        if (!Array.isArray(found)) throw new Error('search failed');
-        const uids = found
-          .filter((uid) => Number.isSafeInteger(uid) && uid > 0)
-          .sort((a, b) => b - a)
-          .slice(0, limit);
-        if (uids.length === 0) return [];
+        const upper = client.mailbox.uidNext - 1;
+        if (!Number.isSafeInteger(upper) || upper < 1) {
+          return { items: [], scannedUidWindow: 0, truncated: false };
+        }
+        const lower = Math.max(1, upper - MAX_LIST_SCAN_UIDS + 1);
         const fetched = await client.fetchAll(
-          uids,
+          `${lower}:${upper}`,
           { uid: true, flags: true, envelope: true, internalDate: true, size: true },
           { uid: true }
         );
-        const byUid = new Map(fetched.map((message) => [message.uid, message]));
         const uidValidity = client.mailbox.uidValidity.toString();
-        return uids.map((uid) => byUid.get(uid)).filter((message): message is FetchMessageObject => Boolean(message))
+        const items = fetched
+          .filter((message) => Number.isSafeInteger(message.uid) && message.uid > 0)
+          .filter((message) => !unread || !(message.flags ?? new Set<string>()).has('\\Seen'))
+          .sort((a, b) => b.uid - a.uid)
+          .slice(0, limit)
           .map((message) => listItem(message, uidValidity));
+        return {
+          items,
+          scannedUidWindow: upper - lower + 1,
+          truncated: lower > 1
+        };
       } finally {
         lock.release();
       }
@@ -141,7 +157,7 @@ export class GmailInboxBroker {
   async read(encodedReference: string): Promise<InboxMessage> {
     const reference = decodeInboxReference(encodedReference);
     return this.withClient(async (client) => {
-      const lock = await client.getMailboxLock('INBOX', { readOnly: true });
+      const lock = await client.getMailboxLock('INBOX', { readOnly: true, acquireTimeout: 10_000 });
       try {
         if (!client.mailbox || client.mailbox.uidValidity.toString() !== reference.uidValidity) {
           throw new SafeMailboxError('Message reference is stale');
@@ -157,19 +173,20 @@ export class GmailInboxBroker {
         }
         const fetched = await client.fetchOne(
           reference.uid,
-          { uid: true, flags: true, envelope: true, internalDate: true, size: true, source: { maxLength: MAX_MESSAGE_BYTES + 1 } },
+          { uid: true, flags: true, envelope: true, internalDate: true, size: true, source: { start: 0, maxLength: MAX_MESSAGE_BYTES + 1 } },
           { uid: true }
         );
         if (!fetched || fetched.uid !== reference.uid || !fetched.source || fetched.source.length > MAX_MESSAGE_BYTES) {
           throw new SafeMailboxError('Message could not be read safely');
         }
         const parsed = await simpleParser(fetched.source, { skipImageLinks: true });
+        const text = cleanBody(parsed.text);
         return {
           ...listItem(fetched, reference.uidValidity),
           to: addresses(fetched.envelope?.to),
           cc: addresses(fetched.envelope?.cc),
-          text: cleanBody(parsed.text),
-          html: typeof parsed.html === 'string' ? cleanBody(parsed.html) : null,
+          text,
+          html: text ? null : (typeof parsed.html === 'string' ? cleanBody(parsed.html) : null),
           attachments: parsed.attachments.slice(0, 50).map((attachment) => ({
             filename: cleanLine(attachment.filename, 300) || null,
             contentType: cleanLine(attachment.contentType, 200),
@@ -187,7 +204,7 @@ export class GmailInboxBroker {
     const unique = new Map(references.map((reference) => [reference.uid, reference]));
     const exact = [...unique.values()];
     return this.withClient(async (client) => {
-      const lock = await client.getMailboxLock('INBOX', { readOnly: false });
+      const lock = await client.getMailboxLock('INBOX', { readOnly: false, acquireTimeout: 10_000 });
       try {
         if (!client.mailbox) throw new Error('mailbox unavailable');
         const uidValidity = client.mailbox.uidValidity.toString();
@@ -205,7 +222,11 @@ export class GmailInboxBroker {
         if (!Array.isArray(seen)) throw new Error('verification failed');
         const approved = new Set(uids);
         const verified = new Set(seen.filter((uid) => approved.has(uid))).size;
-        return { requested: uids.length, verified };
+        return {
+          outcome: verified === uids.length ? 'applied' as const : 'partial' as const,
+          requested: uids.length,
+          verified
+        };
       } finally {
         lock.release();
       }

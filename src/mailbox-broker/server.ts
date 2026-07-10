@@ -20,7 +20,8 @@ const SAFE_ERRORS = new Set([
   'Message could not be read safely',
   'One or more message references are stale',
   'One or more messages are no longer in INBOX',
-  'Gmail mailbox operation failed'
+  'Gmail mailbox operation failed',
+  'Mailbox broker is busy'
 ]);
 
 const responseLine = (response: MailboxResponse): string => {
@@ -33,6 +34,8 @@ const responseLine = (response: MailboxResponse): string => {
 
 export class MailboxBrokerServer {
   private server: Server | null = null;
+  private activeOperations = 0;
+  private readonly maxActiveOperations = 3;
 
   constructor(
     private readonly broker: GmailInboxBroker,
@@ -41,15 +44,21 @@ export class MailboxBrokerServer {
   ) {}
 
   private async execute(request: MailboxRequest): Promise<unknown> {
-    switch (request.op) {
-      case 'list': return this.broker.list(request.unread, request.limit);
-      case 'read': return this.broker.read(request.ref);
-      case 'mark-read': return this.broker.markRead(request.refs);
+    if (this.activeOperations >= this.maxActiveOperations) throw new Error('Mailbox broker is busy');
+    this.activeOperations += 1;
+    try {
+      switch (request.op) {
+        case 'list': return await this.broker.list(request.unread, request.limit);
+        case 'read': return await this.broker.read(request.ref);
+        case 'mark-read': return await this.broker.markRead(request.refs);
+      }
+    } finally {
+      this.activeOperations -= 1;
     }
   }
 
   private handleSocket(socket: Socket): void {
-    socket.setTimeout(15_000, () => socket.destroy());
+    socket.setTimeout(90_000, () => socket.destroy());
     let buffer = Buffer.alloc(0);
     let handled = false;
 

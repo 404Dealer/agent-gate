@@ -81,7 +81,7 @@ async function callBroker(request: ClientRequest): Promise<ClientResponse> {
       socket.destroy();
       reject(new Error('Mailbox broker unavailable'));
     };
-    socket.setTimeout(20_000, fail);
+    socket.setTimeout(90_000, fail);
     socket.once('connect', () => socket.write(`${JSON.stringify(request)}\n`));
     socket.on('data', (chunk: Buffer) => {
       response = Buffer.concat([response, chunk]);

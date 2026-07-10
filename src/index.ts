@@ -21,7 +21,7 @@ const configuredMailboxBroker = (config: AgentGateConfig): MailboxBrokerServer |
   const gidRaw = process.env.AGENT_GATE_MAILBOX_GID;
   if (!gidRaw || !/^[1-9][0-9]*$/.test(gidRaw)) throw new Error('Mailbox broker group is not configured');
   const credentials = credentialsFromConfig(config);
-  if (!credentials) throw new Error('Mailbox broker requires the eligible gmail-smtp provider');
+  if (!credentials) return null;
   return new MailboxBrokerServer(new GmailInboxBroker(credentials), socketPath, Number(gidRaw));
 };
 

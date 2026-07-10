@@ -15,6 +15,7 @@ GRANT_AGENT_AUDIT_READ=false
 SERVICE_USER="agentgate"
 INBOX_GROUP="agentgate-inbox"
 MAILBOX_GROUP="agentgate-mailbox"
+MAILBOX_CLI_PATH="/usr/local/bin/agent-gate-mailbox"
 SERVICE_NAME="agent-gate.service"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
@@ -231,6 +232,10 @@ if ! validate_install_dir "$INSTALL_DIR"; then
   exit 2
 fi
 validate_trusted_path || exit 1
+if [[ -L "$MAILBOX_CLI_PATH" || ( -e "$MAILBOX_CLI_PATH" && ! -f "$MAILBOX_CLI_PATH" ) ]]; then
+  echo "Refusing unsafe existing mailbox client path: $MAILBOX_CLI_PATH" >&2
+  exit 1
+fi
 
 if [[ ! -f "$SOURCE_DIR/package.json" || ! -f "$SOURCE_DIR/package-lock.json" || ! -d "$SOURCE_DIR/src" ]]; then
   echo "Installer source is not a complete agent-gate checkout: $SOURCE_DIR" >&2
@@ -477,12 +482,6 @@ mv "$BUILD_ROOT/node_modules" "$INSTALL_DIR/node_modules"
 mv "$BUILD_ROOT/dist" "$INSTALL_DIR/dist"
 cleanup_builder
 
-# Expose only the credential-free mailbox client to the dedicated capability
-# group. The rest of the compiled service tree remains private to agentgate.
-chmod 751 "$INSTALL_DIR/dist"
-chown root:"$MAILBOX_GROUP" "$INSTALL_DIR/dist/mailbox-client.js"
-chmod 750 "$INSTALL_DIR/dist/mailbox-client.js"
-
 chown -hR root:root "$INSTALL_DIR/src"
 chmod -R u=rwX,go= "$INSTALL_DIR/src"
 
@@ -566,6 +565,7 @@ Wants=network-online.target
 Type=simple
 User=$SERVICE_USER
 Group=$SERVICE_GROUP
+SupplementaryGroups=$INBOX_GROUP $MAILBOX_GROUP
 RuntimeDirectory=agent-gate agent-gate-mailbox
 RuntimeDirectoryMode=0711
 WorkingDirectory=$INSTALL_DIR
@@ -612,6 +612,9 @@ if [[ "$SERVICE_WAS_ACTIVE" == true ]]; then
     exit 1
   fi
 fi
+MAILBOX_CLI_TEMP="$MAILBOX_CLI_PATH.new.$$"
+install -o root -g root -m 0755 "$INSTALL_DIR/dist/mailbox-client.js" "$MAILBOX_CLI_TEMP"
+mv -T -- "$MAILBOX_CLI_TEMP" "$MAILBOX_CLI_PATH"
 rm -rf -- "$ROLLBACK_ROOT"
 ROLLBACK_ROOT=""
 trap - EXIT
@@ -628,7 +631,7 @@ Next steps:
 
 Hermes/agent paths:
   Draft dropbox: $INSTALL_DIR/drafts/inbox
-  Mailbox client: $INSTALL_DIR/dist/mailbox-client.js
+  Mailbox client: $MAILBOX_CLI_PATH
 DONE
 }
 
