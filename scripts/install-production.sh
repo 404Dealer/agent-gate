@@ -264,6 +264,7 @@ PREVIOUS_MODULES="$ROLLBACK_ROOT/previous-node-modules"
 mkdir -p "$CONFIG_DIR" "$INSTALL_DIR"/drafts/{inbox,pending,approved,sent,denied,failed}
 rsync -a --delete --chown=root:root \
   --exclude /.git/ \
+  --exclude '/.rollback-*/' \
   --exclude /node_modules/ \
   --exclude /dist/ \
   --exclude /config/ \

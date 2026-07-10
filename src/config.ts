@@ -124,7 +124,7 @@ function validateOutlookRefreshTokenBindings(value: unknown): void {
   for (const provider of Object.values(providers as Record<string, unknown>)) {
     if (!provider || typeof provider !== 'object' || Array.isArray(provider)) continue;
     const entry = provider as Record<string, unknown>;
-    if (entry.type !== 'email-outlook' || typeof entry.refreshTokenKey !== 'string') continue;
+    if (typeof entry.refreshTokenKey !== 'string') continue;
     const expected = `\${PASS:${entry.refreshTokenKey}}`;
     if (entry.refreshToken !== expected) {
       throw new Error('Outlook refreshTokenKey requires refreshToken to use the exact matching ${PASS:key} reference');

@@ -66,6 +66,25 @@ audit:
       'refreshToken: refresh-token\n    refreshTokenKey: agent-gate/microsoft-refresh-token'
     ), 'utf8');
     await assert.rejects(() => loadConfig(configPath), /exact matching.*PASS/i);
+
+    const priorType = process.env.OUTLOOK_PROVIDER_TYPE;
+    const priorToken = process.env.OUTLOOK_REFRESH_TOKEN;
+    process.env.OUTLOOK_PROVIDER_TYPE = 'email-outlook';
+    process.env.OUTLOOK_REFRESH_TOKEN = 'environment-refresh-token';
+    try {
+      await writeFile(configPath, source
+        .replace('type: email-outlook', 'type: "${OUTLOOK_PROVIDER_TYPE}"')
+        .replace(
+          'refreshToken: refresh-token',
+          'refreshToken: "${OUTLOOK_REFRESH_TOKEN}"\n    refreshTokenKey: agent-gate/different-refresh-token'
+        ), 'utf8');
+      await assert.rejects(() => loadConfig(configPath), /exact matching.*PASS/i);
+    } finally {
+      if (priorType === undefined) delete process.env.OUTLOOK_PROVIDER_TYPE;
+      else process.env.OUTLOOK_PROVIDER_TYPE = priorType;
+      if (priorToken === undefined) delete process.env.OUTLOOK_REFRESH_TOKEN;
+      else process.env.OUTLOOK_REFRESH_TOKEN = priorToken;
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

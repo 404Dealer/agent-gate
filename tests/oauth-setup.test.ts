@@ -11,7 +11,7 @@ import { persistGmailOnboarding, persistOutlookOnboarding, persistZohoOnboarding
 import { parseOAuthSetupArgs } from '../src/oauth/cli-options.js';
 import { buildZohoAuthorizationUrl, exchangeZohoAuthorizationCode, fetchZohoSenderChoices, getZohoRegionEndpoints, validateZohoCallbackRegion } from '../src/oauth/zoho.js';
 import { parseSelection, sanitizeTerminalText } from '../src/oauth/selection.js';
-import { chmod, lstat, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -96,6 +96,29 @@ test('production installer retains rollback state until upgraded service is heal
   const discardRollback = installer.lastIndexOf('rm -rf -- "$ROLLBACK_ROOT"');
   assert(healthCheck >= 0, 'installer must health-check the upgraded service');
   assert(discardRollback > healthCheck, 'rollback state must survive until after the health check');
+});
+
+test('production installer rsync preserves rollback snapshots', async () => {
+  const installer = await readFile(new URL('../scripts/install-production.sh', import.meta.url), 'utf8');
+  assert.match(installer, /--exclude '\/.rollback-\*\/'/);
+
+  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-rsync-rollback-'));
+  const source = join(dir, 'source');
+  const install = join(dir, 'install');
+  const rollbackFile = join(install, '.rollback-12345678', 'config.yaml');
+  try {
+    await mkdir(source);
+    await mkdir(join(install, '.rollback-12345678'), { recursive: true });
+    await writeFile(join(source, 'new-runtime'), 'new', 'utf8');
+    await writeFile(rollbackFile, 'previous-config', 'utf8');
+    const sync = spawnSync('rsync', [
+      '-a', '--delete', '--exclude', '/.rollback-*/', `${source}/`, `${install}/`
+    ], { encoding: 'utf8' });
+    assert.equal(sync.status, 0, sync.stderr || sync.stdout);
+    assert.equal(await readFile(rollbackFile, 'utf8'), 'previous-config');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('interactive selection is explicit, bounded, and terminal-safe', () => {
