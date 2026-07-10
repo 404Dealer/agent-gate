@@ -5,7 +5,8 @@
   "type": "module",
   "bin": {
     "agent-gate": "./dist/index.js",
-    "agent-gate-oauth": "./dist/oauth-setup.js"
+    "agent-gate-oauth": "./dist/oauth-setup.js",
+    "agent-gate-smtp-setup": "./dist/smtp-setup.js"
   },
   "files": [
     "dist/",
@@ -45,11 +46,13 @@
   "dependencies": {
     "chokidar": "^4.0.3",
     "grammy": "^1.35.1",
+    "nodemailer": "^9.0.3",
     "yaml": "^2.8.1",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
+    "@types/nodemailer": "^8.0.1",
     "tsx": "^4.23.0",
     "typescript": "^5.9.2"
   }

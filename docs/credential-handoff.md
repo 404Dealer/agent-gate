@@ -50,13 +50,21 @@ This creates users, groups, directories, permissions, a systemd service, and a c
 
 ### Phase B — Human-only credential handoff
 
-Store the separate approval-bot token first, because the OAuth helper restarts the service after a successful config commit:
+Store the separate approval-bot token first, because provider onboarding restarts the service after a successful config commit:
 
 ```bash
 sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
 ```
 
-Then authorize an email provider from a local terminal, SSH session, or console that is **not being driven by Hermes**:
+For the simplest Gmail setup, create a dedicated Google App Password and enter it only into the human-controlled SMTP helper:
+
+```bash
+sudo /opt/agent-gate/scripts/smtp-setup.sh gmail
+```
+
+The helper verifies Gmail SMTP over TLS, stores the App Password directly under `agentgate`, writes only a versioned `${PASS:...}` reference plus safe sender metadata to private config, and restarts the service. The App Password is broader than the Gmail API `gmail.send` scope; see [smtp-onboarding.md](smtp-onboarding.md).
+
+Alternatively, authorize an OAuth provider from a local terminal, SSH session, or console that is **not being driven by Hermes**:
 
 ```bash
 sudo /opt/agent-gate/scripts/oauth-setup.sh gmail
@@ -66,9 +74,9 @@ sudo /opt/agent-gate/scripts/oauth-setup.sh outlook
 sudo /opt/agent-gate/scripts/oauth-setup.sh zoho
 ```
 
-The helper runs OAuth as `agentgate`, stores the resulting refresh token directly in that user's encrypted `pass` store, writes only versioned `${PASS:...}` references into the private config, and restarts the service. See [oauth-onboarding.md](oauth-onboarding.md).
+The OAuth helper runs as `agentgate`, stores the resulting refresh token directly in that user's encrypted `pass` store, writes only versioned `${PASS:...}` references into the private config, and restarts the service. See [oauth-onboarding.md](oauth-onboarding.md).
 
-For manual email recovery when OAuth onboarding cannot be used, the operator can run the installed fallback helper, for example:
+For manual email recovery when an onboarding helper cannot be used, the operator can run the installed fallback helper, for example:
 
 ```bash
 sudo /opt/agent-gate/scripts/configure-provider-secrets.sh gmail
@@ -81,13 +89,14 @@ Do **not** paste these values into a Hermes chat, Telegram DM with Hermes, issue
 The preferred model is:
 
 ```text
-Hermes installs infrastructure -> human/OAuth flow gives secrets directly to agentgate
+Hermes installs infrastructure -> human helper gives secrets directly to agentgate
 ```
 
-Hermes may install packages, create users/groups, write non-secret config, and verify service health. Provider send credentials should enter through either:
+Hermes may install packages, create users/groups, write non-secret config, and verify service health. Provider send credentials should enter through one of:
 
-1. the shipped PKCE browser flow in `scripts/oauth-setup.sh`, which terminates as `agentgate` and writes directly to its encrypted store (with Outlook device code available only as an explicit fallback); or
-2. the human-run manual fallback `scripts/configure-provider-secrets.sh`.
+1. the human-run Gmail SMTP helper `scripts/smtp-setup.sh`, which verifies a dedicated App Password and stores it directly under `agentgate`;
+2. the shipped PKCE browser flow in `scripts/oauth-setup.sh`, which terminates as `agentgate` and writes directly to its encrypted store (with Outlook device code available only as an explicit fallback); or
+3. the human-run manual fallback `scripts/configure-provider-secrets.sh`.
 
 Do **not** treat this as equivalent:
 
@@ -119,9 +128,20 @@ For v1, prefer local/SSH credential handoff or OAuth device/browser flow that te
 
 ### Gmail / Google
 
-Supported provider type: `email-gmail`.
+Supported provider types:
 
-Required Gmail data scope plus basic sender identity scopes:
+- `email-smtp` with a dedicated Google App Password — simplest self-hosted setup, but broader credential scope;
+- `email-gmail` with OAuth — narrower `gmail.send` permission, but requires Google OAuth client setup.
+
+The SMTP helper stores one versioned key matching:
+
+```text
+agent-gate/smtp-password-<transaction>
+```
+
+The App Password belongs only to `agentgate`. It must never be copied to Hermes and should be revoked from Google Account when no longer needed. See [smtp-onboarding.md](smtp-onboarding.md).
+
+Required Gmail OAuth data scope plus basic sender identity scopes:
 
 ```text
 openid
@@ -186,9 +206,9 @@ The safest workflow is:
 1. Hermes clones the repo and runs tests/build.
 2. Hermes runs the production installer with sudo approval.
 3. Hermes writes non-secret config values and docs.
-4. Hermes stops before any provider authorization.
-5. The operator runs `scripts/oauth-setup.sh` from their own terminal/SSH session.
-6. OAuth tokens travel directly from the provider to an `agentgate` process and its encrypted store.
+4. Hermes stops before any provider credential entry.
+5. The operator runs `scripts/smtp-setup.sh` or `scripts/oauth-setup.sh` from their own terminal/SSH session.
+6. The App Password or OAuth tokens travel directly to an `agentgate` process and its encrypted store.
 7. The wrapper restarts `agent-gate` after successful persistence.
 8. Hermes verifies only service health and writes a harmless test draft to the inbox.
 

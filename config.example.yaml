@@ -17,6 +17,19 @@ security:
   enforceProductionPermissions: false
 
 providers:
+  # Simplest self-hosted Gmail path: create a dedicated Google App Password,
+  # store it under agentgate, and use authenticated SMTP over implicit TLS.
+  gmail-smtp:
+    type: "email-smtp"
+    host: "smtp.gmail.com"
+    port: 465
+    tlsMode: "implicit"
+    username: "you@gmail.com"
+    password: "${GMAIL_APP_PASSWORD}"
+    fromAddress: "you@gmail.com"
+    displayName: "Your Name"
+
+  # Narrower gmail.send OAuth alternative; setup is more involved.
   gmail:
     type: "email-gmail"
     clientId: "${GOOGLE_CLIENT_ID}"

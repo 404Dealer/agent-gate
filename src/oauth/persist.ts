@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open, unlink, type FileHandle } from 'node:fs/promises';
-import { updateProviderConfig, validateProviderConfigTarget } from './config-writer.js';
+import { updateProviderConfig, validateProviderConfigTarget, validateProviderName } from './config-writer.js';
 import type { ZohoRegion } from './zoho.js';
 
 export interface SecretStore {
@@ -66,6 +66,42 @@ export async function persistGmailOnboarding(options: PersistGmailOptions): Prom
     if (options.displayName) provider.displayName = options.displayName;
 
     await updateProviderConfig(options.configPath, 'gmail', provider, options.setAsDefault);
+  });
+}
+
+interface PersistSmtpOptions {
+  configPath: string;
+  store: SecretStore;
+  providerName: string;
+  host: string;
+  port: number;
+  tlsMode: 'implicit' | 'starttls';
+  username: string;
+  password: string;
+  fromAddress: string;
+  displayName?: string;
+  setAsDefault: boolean;
+}
+
+export async function persistSmtpOnboarding(options: PersistSmtpOptions): Promise<void> {
+  validateProviderName(options.providerName);
+  await withOnboardingLock(options.configPath, async () => {
+    const id = transactionId();
+    const passwordKey = versionedKey('smtp-password', id);
+    await options.store.set(passwordKey, options.password);
+
+    const provider: Record<string, unknown> = {
+      type: 'email-smtp',
+      host: options.host,
+      port: options.port,
+      tlsMode: options.tlsMode,
+      username: options.username,
+      password: passReference(passwordKey),
+      fromAddress: options.fromAddress
+    };
+    if (options.displayName) provider.displayName = options.displayName;
+
+    await updateProviderConfig(options.configPath, options.providerName, provider, options.setAsDefault);
   });
 }
 

@@ -49,7 +49,7 @@ agent-gate is only a **hard security boundary** when these requirements are true
 
 If you run agent-gate and your agent as the same Unix user, or give the agent direct send credentials, agent-gate is still useful as an approval workflow — but it is **not** a structural security boundary.
 
-See [docs/deployment.md](docs/deployment.md) for the production filesystem setup, [docs/hermes.md](docs/hermes.md) for Hermes-specific integration, [docs/credential-handoff.md](docs/credential-handoff.md) for operator responsibilities, and [docs/oauth-onboarding.md](docs/oauth-onboarding.md) for direct-to-`agentgate` browser/device authorization.
+See [docs/deployment.md](docs/deployment.md) for the production filesystem setup, [docs/hermes.md](docs/hermes.md) for Hermes-specific integration, [docs/credential-handoff.md](docs/credential-handoff.md) for operator responsibilities, [docs/smtp-onboarding.md](docs/smtp-onboarding.md) for simple Gmail App Password setup, and [docs/oauth-onboarding.md](docs/oauth-onboarding.md) for narrower OAuth authorization.
 
 ## How This Differs from Hermes Built-In Approval
 
@@ -200,6 +200,16 @@ security:
   enforceProductionPermissions: false # Set true after applying docs/deployment.md
 
 providers:
+  gmail-smtp:
+    type: "email-smtp"
+    host: "smtp.gmail.com"
+    port: 465
+    tlsMode: "implicit"
+    username: "you@gmail.com"
+    password: "${GMAIL_APP_PASSWORD}"
+    fromAddress: "you@gmail.com"
+    displayName: "Your Name"
+
   gmail:
     type: "email-gmail"
     clientId: "${GOOGLE_CLIENT_ID}"
@@ -250,6 +260,18 @@ Config placeholders support two resolvers:
 
 **Unresolved placeholders cause a hard failure at startup.** No silent empty strings.
 
+### Simple Gmail App Password onboarding
+
+For the Himalaya-style self-hosted path, no Google Cloud project or OAuth client is required:
+
+```bash
+# Human-controlled terminal only
+sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
+sudo /opt/agent-gate/scripts/smtp-setup.sh gmail
+```
+
+The SMTP helper verifies Gmail over TLS, stores the App Password directly under `agentgate`, writes only a versioned `${PASS:...}` reference to private config, and restarts the service. App Passwords are simpler but broader than the Gmail API `gmail.send` scope. See **[docs/smtp-onboarding.md](docs/smtp-onboarding.md)** for prerequisites, revocation, and exact behavior.
+
 ### Secure OAuth onboarding
 
 A production installation can acquire provider refresh tokens without giving them to Hermes:
@@ -272,6 +294,22 @@ See **[docs/oauth-onboarding.md](docs/oauth-onboarding.md)** for provider regist
 ### `log-only`
 
 Dry-run provider. Logs the payload to stdout, sends nothing. Use for testing and development.
+
+### `email-smtp`
+
+Sends through an authenticated SMTP server with mandatory certificate-verified TLS. Use `tlsMode: implicit` for TLS from connection start (commonly port 465) or `tlsMode: starttls` for a required STARTTLS upgrade (commonly port 587). Unencrypted SMTP is not supported.
+
+| Config Key | Description |
+|------------|-------------|
+| `host` | SMTP DNS name or IP address |
+| `port` | SMTP port (`1`–`65535`) |
+| `tlsMode` | `implicit` or `starttls` |
+| `username` | SMTP authentication username |
+| `password` | SMTP/App Password; use a `${PASS:...}` reference in production |
+| `fromAddress` | Enforced sender address; draft `from` is ignored |
+| `displayName` | Optional display name shown in approval preview and From header |
+
+The transport uses fixed connection/greeting/socket timeouts, disables file and URL access, redacts provider errors, and treats partial SMTP acceptance as completed-with-warning so an automatic retry cannot duplicate already accepted recipients.
 
 ### `email-gmail`
 
@@ -428,7 +466,6 @@ agent-gate/
 ### Planned
 
 - [ ] Edit flow — modify drafts in Telegram before approving
-- [ ] Generic SMTP provider
 - [ ] Webhook provider (for non-email actions: Slack, Discord, APIs)
 - [ ] Bulk approve/deny
 - [ ] Draft expiry (auto-deny after configurable timeout)

@@ -1,5 +1,6 @@
 import { execSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
+import { isIP } from 'node:net';
 import { resolve } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
@@ -23,8 +24,27 @@ const SecurityConfigSchema = z.object({
   enforceProductionPermissions: z.boolean().default(false)
 }).default({});
 
+const SmtpHostSchema = z.string().min(1).max(253).refine((value) => {
+  if (isIP(value) !== 0) return true;
+  const host = value.endsWith('.') ? value.slice(0, -1) : value;
+  if (!host) return false;
+  return host.split('.').every((label) =>
+    /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(label)
+  );
+}, 'Invalid SMTP host');
+
 const ProviderSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('log-only'), fromAddress: z.string().email().optional() }),
+  z.object({
+    type: z.literal('email-smtp'),
+    host: SmtpHostSchema,
+    port: z.number().int().min(1).max(65535),
+    tlsMode: z.enum(['implicit', 'starttls']),
+    username: z.string().min(1),
+    password: z.string().min(1),
+    fromAddress: z.string().email(),
+    displayName: z.string().optional()
+  }),
   z.object({
     type: z.literal('email-gmail'),
     clientId: z.string().min(1),

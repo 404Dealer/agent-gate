@@ -78,6 +78,7 @@ sudo stat -c '%U:%G %a %n' \
   /opt/agent-gate \
   /opt/agent-gate/scripts \
   /opt/agent-gate/scripts/oauth-setup.sh \
+  /opt/agent-gate/scripts/smtp-setup.sh \
   /opt/agent-gate/config \
   /opt/agent-gate/config/config.yaml
 ```
@@ -123,10 +124,12 @@ Store the separate approval-bot token first. The OAuth wrapper restarts the serv
 sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
 ```
 
-Then authorize one email provider from your own terminal:
+Then configure one email provider from your own terminal. Gmail App Password SMTP is the simplest self-hosted path:
 
 ```bash
 # Do not run these through a Hermes conversation if Hermes must not see send credentials.
+sudo /opt/agent-gate/scripts/smtp-setup.sh gmail
+# Or use narrower/more involved OAuth authorization:
 sudo /opt/agent-gate/scripts/oauth-setup.sh gmail
 # or
 sudo /opt/agent-gate/scripts/oauth-setup.sh outlook
@@ -134,13 +137,15 @@ sudo /opt/agent-gate/scripts/oauth-setup.sh outlook
 sudo /opt/agent-gate/scripts/oauth-setup.sh zoho
 ```
 
+The SMTP helper verifies Gmail authentication over certificate-verified TLS, stores one versioned App Password directly in the `agentgate` `pass` store, atomically writes only its `${PASS:...}` reference plus safe sender metadata, and restarts the service. This path requires Google 2-Step Verification and App Password availability; it is simpler but the credential is broader than `gmail.send` OAuth. See [smtp-onboarding.md](smtp-onboarding.md).
+
 The OAuth helper runs as `agentgate` with a clean environment, stores refresh credentials directly in its `pass` store, verifies the authenticated sender/account, atomically writes only versioned `${PASS:...}` references to private config, and restarts the service. Gmail, Outlook, and Zoho use a loopback SSH tunnel by default; Outlook offers an explicit higher-risk `--device-code` fallback. See [oauth-onboarding.md](oauth-onboarding.md).
 
 See [credential-handoff.md](credential-handoff.md) for operator responsibilities and the hard boundary.
 
 ## Phase 4 — Production Config (Manual Install Reference Only)
 
-> **If you used `scripts/install-production.sh`, skip this phase.** The installer created the private config and the OAuth helper updated it. Never replace `config.yaml` with this example after OAuth; doing so would discard the verified sender metadata and versioned pass references.
+> **If you used `scripts/install-production.sh`, skip this phase.** The installer created the private config and the SMTP/OAuth onboarding helper updated it. Never replace `config.yaml` with this example after onboarding; doing so would discard the verified sender metadata and versioned pass references.
 
 ```bash
 sudo -u agentgate tee /opt/agent-gate/config/config.yaml > /dev/null << 'EOF'
@@ -153,6 +158,16 @@ watch:
   pollIntervalMs: 2000
 
 providers:
+  gmail-smtp:
+    type: "email-smtp"
+    host: "smtp.gmail.com"
+    port: 465
+    tlsMode: "implicit"
+    username: "you@gmail.com"
+    password: "${PASS:agent-gate/smtp-password-VERSION}"
+    fromAddress: "you@gmail.com"
+    displayName: "Your Name"
+
   gmail:
     type: "email-gmail"
     clientId: "${PASS:agent-gate/google-client-id}"
@@ -205,7 +220,7 @@ sudo chmod 600 /opt/agent-gate/config/config.yaml
 
 ## Phase 5 — systemd Service (Manual Install Reference Only)
 
-> **If you used the production installer, do not replace its hardened unit.** The installer already wrote the unit and the OAuth wrapper started/restarted it after onboarding. Use the commands below only for a fully manual installation.
+> **If you used the production installer, do not replace its hardened unit.** The installer already wrote the unit and the SMTP/OAuth wrapper started or restarted it after onboarding. Use the commands below only for a fully manual installation.
 
 ```bash
 sudo tee /etc/systemd/system/agent-gate.service > /dev/null << 'EOF'

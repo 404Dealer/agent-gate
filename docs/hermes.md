@@ -66,7 +66,7 @@ Restart the Hermes gateway or start a new session, then verify `agent-gate` appe
 A secure install should be split into two parts:
 
 1. **Hermes-assisted infrastructure setup** — Hermes can clone the repo, run tests/build, run `scripts/install-production.sh`, set non-secret config values, and verify systemd health.
-2. **Human-only provider authorization** — the operator runs `scripts/oauth-setup.sh` from their own terminal or SSH session, outside the Hermes conversation. The browser/provider returns tokens directly to an `agentgate` process.
+2. **Human-only provider credential handoff** — the operator runs `scripts/smtp-setup.sh` or `scripts/oauth-setup.sh` from their own terminal/SSH session, outside the Hermes conversation. The App Password or OAuth token goes directly to an `agentgate` process.
 
 Example infrastructure command Hermes can help prepare or run after explicit sudo approval:
 
@@ -76,13 +76,21 @@ sudo scripts/install-production.sh \
   --telegram-user-id 2061243435
 ```
 
-Store the separate Telegram approval-bot token first; the OAuth helper restarts the service after onboarding:
+Store the separate Telegram approval-bot token first; onboarding restarts the service:
 
 ```bash
 sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
 ```
 
-Then run one provider authorization command personally:
+The simplest Gmail path is a dedicated, revocable Google App Password:
+
+```bash
+sudo /opt/agent-gate/scripts/smtp-setup.sh gmail
+```
+
+This avoids Google Cloud/OAuth app setup. It requires Google 2-Step Verification and App Password availability, and the credential is broader than a `gmail.send` OAuth token. See [smtp-onboarding.md](smtp-onboarding.md).
+
+For narrower OAuth authorization instead:
 
 ```bash
 sudo /opt/agent-gate/scripts/oauth-setup.sh gmail
@@ -92,11 +100,11 @@ sudo /opt/agent-gate/scripts/oauth-setup.sh outlook
 sudo /opt/agent-gate/scripts/oauth-setup.sh zoho
 ```
 
-Do not paste Gmail/Zoho/Outlook refresh tokens, SMTP passwords, API keys, or the agent-gate approval bot token into Hermes. Hermes can verify that secret references exist, but it should not print or receive their values.
+Do not paste Gmail/Zoho/Outlook refresh tokens, SMTP/App Passwords, API keys, or the agent-gate approval bot token into Hermes. Hermes can verify that secret references exist, but it should not print or receive their values.
 
-Do not rely on “Hermes will delete the credentials afterward” as a security boundary. Once Hermes sees a secret, it may already be present in chat/session history, logs, shell history, model context, or backups. The secure pattern is: Hermes installs infrastructure, then a human/OAuth flow gives secrets directly to `agentgate`.
+Do not rely on “Hermes will delete the credentials afterward” as a security boundary. Once Hermes sees a secret, it may already be present in chat/session history, logs, shell history, model context, or backups. The secure pattern is: Hermes installs infrastructure, then a human-run helper gives secrets directly to `agentgate`.
 
-See [credential-handoff.md](credential-handoff.md) for detailed operator responsibilities and [oauth-onboarding.md](oauth-onboarding.md) for provider registration, SSH tunnels, scopes, and browser/device flows.
+See [credential-handoff.md](credential-handoff.md) for detailed operator responsibilities, [smtp-onboarding.md](smtp-onboarding.md) for Gmail App Password setup, and [oauth-onboarding.md](oauth-onboarding.md) for provider registration, SSH tunnels, scopes, and browser/device flows.
 
 ## Give Hermes Write-Only Inbox Access
 

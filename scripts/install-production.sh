@@ -286,10 +286,12 @@ chown root:root "$INSTALL_DIR/scripts"
 chmod 755 "$INSTALL_DIR/scripts"
 chown root:root \
   "$INSTALL_DIR/scripts/oauth-setup.sh" \
+  "$INSTALL_DIR/scripts/smtp-setup.sh" \
   "$INSTALL_DIR/scripts/configure-provider-secrets.sh" \
   "$INSTALL_DIR/scripts/install-production.sh"
 chmod 755 \
   "$INSTALL_DIR/scripts/oauth-setup.sh" \
+  "$INSTALL_DIR/scripts/smtp-setup.sh" \
   "$INSTALL_DIR/scripts/configure-provider-secrets.sh" \
   "$INSTALL_DIR/scripts/install-production.sh"
 
