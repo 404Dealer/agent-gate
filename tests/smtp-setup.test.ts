@@ -12,6 +12,8 @@ import type { SmtpTransportOptions } from '../src/providers/email-smtp.js';
 
 test('production SMTP wrapper enforces TTY, trusted install paths, privilege drop, and health checks', async () => {
   const wrapper = await readFile(new URL('../scripts/smtp-setup.sh', import.meta.url), 'utf8');
+  assert.match(wrapper, /^#!\/bin\/bash$/m);
+  assert.match(wrapper, /\/usr\/bin\/dirname -- "\$SCRIPT_PATH"/);
   assert.match(wrapper, /if \[\[ ! -t 0 \|\| ! -t 1 \]\]/);
   assert.match(wrapper, /if \[\[ \$EUID -ne 0 \]\]/);
   assert.match(wrapper, /assert_trusted_ancestor_chain/);

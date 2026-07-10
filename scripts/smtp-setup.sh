@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # smtp-setup.sh — human-only Gmail App Password onboarding over authenticated SMTP/TLS.
 # Run only from the installed root-owned path in a human-controlled local/SSH terminal.
 
@@ -10,7 +10,7 @@ export PATH="$TRUSTED_PATH"
 SERVICE_USER="agentgate"
 SERVICE_NAME="agent-gate.service"
 SCRIPT_PATH="$(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}")"
-INSTALL_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd -P)"
+INSTALL_DIR="$(cd "$(/usr/bin/dirname -- "$SCRIPT_PATH")/.." && pwd -P)"
 CONFIG_PATH="$INSTALL_DIR/config/config.yaml"
 
 usage() {
