@@ -36,11 +36,7 @@ export interface DeliveryNotification {
 
 const countLabel = (count: number): string => count === 1 ? 'recipient' : 'recipients';
 
-export function buildDeliveryNotification(result: ExecutionResult): DeliveryNotification {
-  if (result.outcome !== 'partial') {
-    return { callbackText: '✅ Sent successfully!', showAlert: false };
-  }
-
+const partialDeliverySummary = (result: ExecutionResult): string => {
   const accepted = result.acceptedCount ?? 0;
   const rejected = result.rejectedCount ?? 0;
   const rejectedRecipients = result.rejectedRecipients ?? [];
@@ -49,10 +45,29 @@ export function buildDeliveryNotification(result: ExecutionResult): DeliveryNoti
   const rejectedDetail = shownRecipients.length > 0
     ? ` (${shownRecipients.join(', ')}${remaining > 0 ? `, and ${remaining} more` : ''})`
     : '';
+  return `${accepted} ${countLabel(accepted)} accepted; ${rejected} rejected${rejectedDetail}`;
+};
+
+export function buildDeliveryNotification(result: ExecutionResult): DeliveryNotification {
+  if (result.persistenceWarning) {
+    const partialDetail = result.outcome === 'partial'
+      ? ` SMTP reported ${partialDeliverySummary(result)}.`
+      : '';
+    return {
+      callbackText: '⚠️ Delivery accepted; record warning',
+      showAlert: true,
+      replyText: `⚠️ Delivery was accepted, but local archive/audit state could not be finalized.${partialDetail} Do not retry automatically because recipients may receive duplicates.`
+    };
+  }
+
+  if (result.outcome !== 'partial') {
+    return { callbackText: '✅ Sent successfully!', showAlert: false };
+  }
+
   return {
     callbackText: '⚠️ Partial delivery',
     showAlert: true,
-    replyText: `⚠️ Partial delivery: ${accepted} ${countLabel(accepted)} accepted; ${rejected} rejected${rejectedDetail}. The draft is archived as sent. Do not retry automatically because accepted recipients may receive duplicates.`
+    replyText: `⚠️ Partial delivery: ${partialDeliverySummary(result)}. The draft is archived as sent. Do not retry automatically because accepted recipients may receive duplicates.`
   };
 }
 
@@ -236,18 +251,23 @@ export class AgentGateBot {
         }
         await ctx.editMessageText(`${originalText}\n\n✅ APPROVED at ${timestamp}`).catch(() => {});
 
+        let result: ExecutionResult;
         try {
-          const result = await this.executor.executeApprovedDraft(approvedPath);
-          const notification = buildDeliveryNotification(result);
-          if (notification.replyText) await ctx.reply(notification.replyText);
-          await ctx.answerCallbackQuery({
-            text: notification.callbackText,
-            show_alert: notification.showAlert
-          });
+          result = await this.executor.executeApprovedDraft(approvedPath);
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
           await ctx.reply(`⚠️ Approved but send failed: ${errMsg}`);
           await ctx.answerCallbackQuery({ text: '⚠️ Send failed', show_alert: true });
+          return;
+        }
+
+        const notification = buildDeliveryNotification(result);
+        await ctx.answerCallbackQuery({
+          text: notification.callbackText,
+          show_alert: notification.showAlert
+        }).catch(() => {});
+        if (notification.replyText) {
+          await ctx.reply(notification.replyText).catch(() => {});
         }
         return;
       }

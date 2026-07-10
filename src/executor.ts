@@ -15,6 +15,7 @@ export interface ExecutionResult {
   acceptedCount?: number;
   rejectedCount?: number;
   rejectedRecipients?: string[];
+  persistenceWarning?: boolean;
 }
 
 export class Executor {
@@ -46,28 +47,9 @@ export class Executor {
       throw new Error(`Provider not configured: ${providerName}`);
     }
 
+    let result: ProviderResult;
     try {
-      const result = await provider.send(draft);
-
-      const sentDraft = updateStatus(draft, 'sent', {
-        approval: {
-          ...draft.approval,
-          error: undefined
-        }
-      });
-
-      const sentPath = resolve(this.draftsRoot, 'sent', basename(filePath));
-      await writeFile(filePath, JSON.stringify(sentDraft, null, 2), 'utf8');
-      await rename(filePath, sentPath);
-      const executionResult = this.toExecutionResult(result);
-      await this.appendAudit(
-        executionResult.outcome,
-        sentDraft,
-        executionResult.details,
-        result.providerMessageId,
-        executionResult
-      );
-      return executionResult;
+      result = await provider.send(draft);
     } catch (error) {
       const safeError = sanitizeError(error);
       const failedDraft = updateStatus(draft, 'failed', {
@@ -77,11 +59,39 @@ export class Executor {
         }
       });
 
-      const failedPath = resolve(this.draftsRoot, 'failed', basename(filePath));
-      await writeFile(filePath, JSON.stringify(failedDraft, null, 2), 'utf8');
-      await rename(filePath, failedPath);
-      await this.appendAudit('failed', failedDraft, safeError);
+      try {
+        const failedPath = resolve(this.draftsRoot, 'failed', basename(filePath));
+        await writeFile(filePath, JSON.stringify(failedDraft, null, 2), 'utf8');
+        await rename(filePath, failedPath);
+        await this.appendAudit('failed', failedDraft, safeError);
+      } catch {
+        // A local bookkeeping failure must not replace the fixed provider error.
+      }
       throw new Error(safeError);
+    }
+
+    const executionResult = this.toExecutionResult(result);
+    const sentDraft = updateStatus(draft, 'sent', {
+      approval: {
+        ...draft.approval,
+        error: undefined
+      }
+    });
+
+    try {
+      const sentPath = resolve(this.draftsRoot, 'sent', basename(filePath));
+      await writeFile(filePath, JSON.stringify(sentDraft, null, 2), 'utf8');
+      await rename(filePath, sentPath);
+      await this.appendAudit(
+        executionResult.outcome,
+        sentDraft,
+        executionResult.details,
+        result.providerMessageId,
+        executionResult
+      );
+      return executionResult;
+    } catch {
+      return { ...executionResult, persistenceWarning: true };
     }
   }
 

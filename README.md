@@ -310,7 +310,7 @@ Sends through an authenticated SMTP server with mandatory certificate-verified T
 | `allowFromAlias` | Optional explicit opt-in for an operator-verified sender alias or non-email SMTP username; default `false` |
 | `displayName` | Optional display name shown in approval preview and From header |
 
-The transport uses fixed connection/greeting/socket timeouts, disables file and URL access, and redacts provider errors. Partial SMTP acceptance is archived as non-retryable `sent` state, recorded as `partial` in audit, and shown to the operator as an explicit Telegram warning with accepted/rejected counts and safe rejected addresses. This prevents automatic retry from duplicating delivery to already accepted recipients.
+The transport uses fixed connection/greeting/socket timeouts, disables file and URL access, and redacts provider errors. Partial SMTP acceptance is archived as non-retryable `sent` state, recorded as `partial` in audit, and shown to the operator as an explicit Telegram warning with accepted/rejected counts and safe rejected addresses. If SMTP accepts delivery but local archive/audit finalization fails, Telegram instead reports that delivery was accepted with a record warning and instructs the operator not to retry. These states prevent duplicate delivery to already accepted recipients.
 
 ### `email-gmail`
 

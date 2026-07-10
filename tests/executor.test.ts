@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import type { AgentGateConfig } from '../src/config.js';
 import { Executor } from '../src/executor.js';
 import { buildDeliveryNotification } from '../src/bot.js';
-import type { Provider } from '../src/providers/index.js';
+import type { Provider, ProviderResult } from '../src/providers/index.js';
 import { DraftSchema } from '../src/schema.js';
 
 test('executor preserves partial delivery as non-retryable sent state and returns a warning result', async () => {
@@ -99,8 +99,67 @@ test('bot notification makes partial delivery explicit and warns against automat
 });
 
 test('bot notification preserves the ordinary full-success response', () => {
-  assert.deepEqual(buildDeliveryNotification({ outcome: 'sent', details: 'sent' }), {
+  assert.deepEqual(buildDeliveryNotification({ outcome: 'sent', details: 'ok' }), {
     callbackText: '✅ Sent successfully!',
     showAlert: false
   });
+});
+
+test('post-acceptance persistence failure never reports delivery as failed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'agent-gate-executor-persistence-warning-'));
+  try {
+    for (const directory of ['approved', 'sent', 'failed']) {
+      await mkdir(join(root, directory));
+    }
+    const draft = DraftSchema.parse({
+      id: randomUUID(),
+      type: 'email',
+      status: 'approved',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      source: 'test-agent',
+      provider: 'smtp',
+      payload: {
+        from: 'ignored@example.com',
+        to: 'accepted@example.com',
+        subject: 'Persistence warning test',
+        body: '<p>Test</p>'
+      }
+    });
+    await writeFile(join(root, 'approved', `${draft.id}.json`), JSON.stringify(draft), 'utf8');
+    const config = {
+      telegram: { botToken: 'test', allowedUsers: [1] },
+      watch: { directory: join(root, 'inbox'), pollIntervalMs: 1000 },
+      approval: { bodyPreviewChars: 2000, allowTruncatedApproval: false },
+      security: { enforceProductionPermissions: false },
+      providers: { smtp: { type: 'log-only' } },
+      defaults: { provider: 'smtp', timezone: 'UTC' },
+      audit: { enabled: true, logFile: join(root, 'missing-directory', 'audit.log') }
+    } as AgentGateConfig;
+    const provider: Provider = {
+      describeSender: () => 'sender@example.com',
+      send: async (): Promise<ProviderResult> => ({ details: 'accepted' })
+    };
+    const executor = new Executor(config, root, { smtp: provider });
+
+    const result = await executor.executeApprovedDraft(join(root, 'approved', `${draft.id}.json`));
+    assert.deepEqual(result, {
+      outcome: 'sent',
+      details: 'accepted',
+      persistenceWarning: true
+    });
+    assert.equal(
+      JSON.parse(await readFile(join(root, 'sent', `${draft.id}.json`), 'utf8')).status,
+      'sent'
+    );
+    await assert.rejects(() => readFile(join(root, 'failed', `${draft.id}.json`), 'utf8'), /ENOENT/);
+
+    const notification = buildDeliveryNotification(result);
+    assert.equal(notification.showAlert, true);
+    assert.match(notification.callbackText, /record warning/i);
+    assert.match(notification.replyText ?? '', /accepted/i);
+    assert.match(notification.replyText ?? '', /Do not retry automatically/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
