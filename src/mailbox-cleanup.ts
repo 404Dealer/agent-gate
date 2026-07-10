@@ -2,6 +2,10 @@
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { promptText } from './oauth/prompts.js';
+import {
+  recordMailboxCleanupAudit,
+  type MailboxCleanupAuditEvent
+} from './mailbox/audit.js';
 import { parseMailboxCleanupArgs, type MailboxCleanupOptions } from './mailbox/cli-options.js';
 import { isCleanupConfirmed } from './mailbox/confirmation.js';
 import { loadGmailCleanupCredentials, type GmailCleanupCredentials } from './mailbox/config.js';
@@ -17,6 +21,7 @@ export interface MailboxCleanupCommandDependencies {
   loadCredentials(configPath: string): Promise<GmailCleanupCredentials>;
   createConnection(credentials: GmailCleanupCredentials): ManagedCleanupConnection;
   prompt(question: string): Promise<string>;
+  recordAudit(event: MailboxCleanupAuditEvent): Promise<void>;
   write(message: string): void;
 }
 
@@ -24,6 +29,10 @@ const defaultDependencies: MailboxCleanupCommandDependencies = {
   loadCredentials: (configPath) => loadGmailCleanupCredentials(configPath),
   createConnection: (credentials) => new GmailImapCleanupConnection(credentials),
   prompt: (question) => promptText(question),
+  recordAudit: (event) => recordMailboxCleanupAudit(
+    process.env.AGENT_GATE_AUDIT_LOG,
+    event
+  ),
   write: (message) => console.log(message)
 };
 
@@ -47,6 +56,23 @@ export async function runMailboxCleanupCommand(
         'Type MARK READ to mark exactly this unread Spam/Trash snapshot as read'
       );
       return isCleanupConfirmed(answer);
+    });
+
+    const auditEvent: MailboxCleanupAuditEvent = {
+      action: 'mailbox-cleanup',
+      provider: 'gmail-smtp',
+      mailbox: credentials.username,
+      outcome: result.outcome,
+      spamUnread: result.preview.spam.unreadCount,
+      trashUnread: result.preview.trash.unreadCount,
+      snapshotTotal: result.preview.totalUnread,
+      markedRead: result.markedRead,
+      incompleteFolders: result.outcome === 'partial' ? [...result.incompleteFolders] : []
+    };
+    await dependencies.recordAudit(auditEvent).catch(() => {
+      dependencies.write(
+        'WARNING: Mailbox cleanup result could not be persisted to the audit log.'
+      );
     });
 
     if (result.outcome === 'no-op') {

@@ -118,4 +118,5 @@ fi
   GNUPGHOME="/home/$SERVICE_USER/.gnupg" \
   PASSWORD_STORE_DIR="/home/$SERVICE_USER/.password-store" \
   AGENT_GATE_PASS_BIN="$PASS_BIN" \
+  AGENT_GATE_AUDIT_LOG="$INSTALL_DIR/audit.log" \
   "$NODE_BIN" "$INSTALL_DIR/dist/mailbox-cleanup.js" "gmail" --config "$CONFIG_PATH"

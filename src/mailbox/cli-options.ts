@@ -21,7 +21,7 @@ export function parseMailboxCleanupArgs(args: string[]): MailboxCleanupOptions {
       configSeen = true;
       continue;
     }
-    throw new Error(`Unknown option: ${option}`);
+    throw new Error('Unknown option');
   }
 
   return { provider: 'gmail', configPath };

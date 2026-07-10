@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseMailboxCleanupArgs } from '../src/mailbox/cli-options.js';
+import { recordMailboxCleanupAudit } from '../src/mailbox/audit.js';
 import { isCleanupConfirmed } from '../src/mailbox/confirmation.js';
 import { loadGmailCleanupCredentials } from '../src/mailbox/config.js';
 import {
@@ -265,6 +266,7 @@ test('Gmail IMAP adapter uses UID locks and rejects mailbox identity changes bef
 test('mailbox cleanup command prints only counts and clears its local credential reference', async () => {
   const output: string[] = [];
   const events: string[] = [];
+  const auditEvents: unknown[] = [];
   const credentials = { username: 'owner@gmail.com', password: 'abcdefghijklmnop' };
   const connection: CleanupMailboxConnection & { connect(): Promise<void>; disconnect(): Promise<void> } = {
     connect: async () => { events.push('connect'); },
@@ -285,6 +287,7 @@ test('mailbox cleanup command prints only counts and clears its local credential
       output.push(question);
       return 'MARK READ';
     },
+    recordAudit: async (event) => { auditEvents.push(event); },
     write: (message) => { output.push(message); }
   };
 
@@ -297,6 +300,18 @@ test('mailbox cleanup command prints only counts and clears its local credential
   assert.equal(result.markedRead, 3);
   assert.deepEqual(events, ['connect', 'disconnect']);
   assert.equal(credentials.password, '');
+  assert.deepEqual(auditEvents, [{
+    action: 'mailbox-cleanup',
+    provider: 'gmail-smtp',
+    mailbox: 'owner@gmail.com',
+    outcome: 'applied',
+    spamUnread: 2,
+    trashUnread: 1,
+    snapshotTotal: 3,
+    markedRead: 3,
+    incompleteFolders: []
+  }]);
+  assert.doesNotMatch(JSON.stringify(auditEvents), /abcdefghijklmnop/);
   const transcript = output.join('\n');
   assert.match(transcript, /Gmail mailbox: owner@gmail\.com/);
   assert.match(transcript, /Unread Spam: 2/);
@@ -319,6 +334,7 @@ test('production mailbox cleanup wrapper preserves the credential boundary and f
   assert.match(wrapper, /resolve_trusted_executable env/);
   assert.match(wrapper, /resolve_trusted_executable pass/);
   assert.match(wrapper, /AGENT_GATE_PASS_BIN="\$PASS_BIN"/);
+  assert.match(wrapper, /AGENT_GATE_AUDIT_LOG="\$INSTALL_DIR\/audit\.log"/);
   assert.match(wrapper, /"\$RUNUSER_BIN" -u "\$SERVICE_USER" -- "\$ENV_BIN" -i/);
   assert.match(wrapper, /dist\/mailbox-cleanup\.js/);
   assert.match(wrapper, /"gmail" --config "\$CONFIG_PATH"/);
@@ -326,4 +342,95 @@ test('production mailbox cleanup wrapper preserves the credential boundary and f
 
   const installer = await readFile(new URL('../scripts/install-production.sh', import.meta.url), 'utf8');
   assert.match(installer, /"\$INSTALL_DIR\/scripts\/mailbox-cleanup\.sh"/);
+});
+
+test('mailbox cleanup audit appends counts-only JSONL and rejects symlinks', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-mailbox-audit-'));
+  try {
+    const auditPath = join(dir, 'audit.log');
+    const redirectedPath = join(dir, 'redirected.log');
+    const symlinkPath = join(dir, 'audit-link.log');
+    await writeFile(auditPath, '', { encoding: 'utf8', mode: 0o640 });
+    await chmod(auditPath, 0o640);
+    const event = {
+      action: 'mailbox-cleanup' as const,
+      provider: 'gmail-smtp' as const,
+      mailbox: 'owner@gmail.com',
+      outcome: 'applied' as const,
+      spamUnread: 2,
+      trashUnread: 1,
+      snapshotTotal: 3,
+      markedRead: 3,
+      incompleteFolders: []
+    };
+
+    await recordMailboxCleanupAudit(auditPath, event);
+    const parsed = JSON.parse((await readFile(auditPath, 'utf8')).trim()) as Record<string, unknown>;
+    assert.match(String(parsed.ts), /^\d{4}-\d{2}-\d{2}T/);
+    delete parsed.ts;
+    assert.deepEqual(parsed, event);
+    assert.doesNotMatch(JSON.stringify(parsed), /password|subject|body/i);
+
+    await writeFile(redirectedPath, 'sentinel', { encoding: 'utf8', mode: 0o640 });
+    await symlink(redirectedPath, symlinkPath);
+    await assert.rejects(
+      () => recordMailboxCleanupAudit(symlinkPath, event),
+      /audit persistence failed/
+    );
+    assert.equal(await readFile(redirectedPath, 'utf8'), 'sentinel');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('mailbox cleanup skips confirmation for no-op and performs no writes when cancelled', async () => {
+  let confirmCalls = 0;
+  let markCalls = 0;
+  const baseConnection = {
+    listMailboxes: async () => [
+      { path: '[Gmail]/Spam', specialUse: '\\Junk' },
+      { path: '[Gmail]/Trash', specialUse: '\\Trash' }
+    ],
+    markSeen: async () => { markCalls += 1; return 0; }
+  };
+
+  const noOp = await runMailboxCleanup({
+    ...baseConnection,
+    snapshotUnread: async () => ({ uidValidity: '1', uids: [] })
+  }, async () => { confirmCalls += 1; return true; });
+  assert.equal(noOp.outcome, 'no-op');
+  assert.equal(confirmCalls, 0);
+  assert.equal(markCalls, 0);
+
+  const cancelled = await runMailboxCleanup({
+    ...baseConnection,
+    snapshotUnread: async (path) => ({
+      uidValidity: path.endsWith('Spam') ? '1' : '2',
+      uids: [1]
+    })
+  }, async () => { confirmCalls += 1; return false; });
+  assert.equal(cancelled.outcome, 'cancelled');
+  assert.equal(confirmCalls, 1);
+  assert.equal(markCalls, 0);
+});
+
+test('mailbox cleanup rejects ineligible Gmail config before reading pass', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-mailbox-invalid-config-'));
+  try {
+    const configPath = join(dir, 'config.yaml');
+    const markerPath = join(dir, 'pass-invoked');
+    const passPath = join(dir, 'pass');
+    await writeFile(passPath, `#!/bin/sh\nprintf invoked > "${markerPath}"\nprintf abcdefghijklmnop\\n\n`, { encoding: 'utf8', mode: 0o755 });
+    await chmod(passPath, 0o755);
+    await writeFile(configPath, `providers:\n  gmail-smtp:\n    type: email-smtp\n    host: smtp.gmail.com\n    port: 465\n    tlsMode: implicit\n    username: owner@gmail.com\n    password: exposed-inline-secret\n    fromAddress: owner@gmail.com\n`, { encoding: 'utf8', mode: 0o600 });
+    await chmod(configPath, 0o600);
+
+    await assert.rejects(
+      () => loadGmailCleanupCredentials(configPath, { AGENT_GATE_PASS_BIN: passPath }),
+      /must remain an isolated pass reference/
+    );
+    await assert.rejects(() => readFile(markerPath, 'utf8'));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

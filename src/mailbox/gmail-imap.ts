@@ -31,7 +31,7 @@ export function buildGmailImapOptions(credentials: GmailCleanupCredentials): Ima
 export interface GmailImapClient {
   mailbox: false | { uidValidity: bigint };
   connect(): Promise<void>;
-  list(): Promise<readonly Array<{ path: string; specialUse?: string }>[number][]>;
+  list(): Promise<ReadonlyArray<{ path: string; specialUse?: string }>>;
   getMailboxLock(
     path: string,
     options: { readOnly: boolean }
