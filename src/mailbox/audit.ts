@@ -5,12 +5,9 @@ import { isAbsolute } from 'node:path';
 export interface MailboxCleanupAuditEvent {
   action: 'mailbox-cleanup';
   provider: 'gmail-smtp';
-  mailbox: string;
   outcome: 'no-op' | 'cancelled' | 'applied' | 'partial';
-  spamUnread: number;
-  trashUnread: number;
   snapshotTotal: number;
-  markedRead: number;
+  verifiedRead: number;
   incompleteFolders: Array<'spam' | 'trash'>;
 }
 

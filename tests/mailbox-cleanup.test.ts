@@ -1,15 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile as execFileCallback } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { parseMailboxCleanupArgs } from '../src/mailbox/cli-options.js';
 import { recordMailboxCleanupAudit } from '../src/mailbox/audit.js';
 import { isCleanupConfirmed } from '../src/mailbox/confirmation.js';
 import { loadGmailCleanupCredentials } from '../src/mailbox/config.js';
 import {
   runMailboxCleanupCommand,
-  type MailboxCleanupCommandDependencies
+  type MailboxCleanupCommandDependencies,
+  type ManagedCleanupConnection
 } from '../src/mailbox-cleanup.js';
 import {
   buildGmailImapOptions,
@@ -22,6 +25,8 @@ import {
   type MailboxDescriptor,
   type MailboxUidSnapshot
 } from '../src/mailbox/cleanup.js';
+
+const execFile = promisify(execFileCallback);
 
 test('mailbox cleanup CLI accepts only the fixed Gmail operation and non-secret config path', () => {
   assert.deepEqual(parseMailboxCleanupArgs(['gmail']), {
@@ -44,7 +49,7 @@ test('mailbox cleanup CLI accepts only the fixed Gmail operation and non-secret 
 
 test('mailbox cleanup requires the exact human confirmation phrase', () => {
   assert.equal(isCleanupConfirmed('MARK READ'), true);
-  assert.equal(isCleanupConfirmed('  MARK READ  '), true);
+  assert.equal(isCleanupConfirmed('  MARK READ  '), false);
   assert.equal(isCleanupConfirmed('mark read'), false);
   assert.equal(isCleanupConfirmed('yes'), false);
   assert.equal(isCleanupConfirmed('MARK READ NOW'), false);
@@ -52,9 +57,9 @@ test('mailbox cleanup requires the exact human confirmation phrase', () => {
 
 test('mailbox cleanup marks only unread UIDs snapshotted before human confirmation', async () => {
   const mailboxes: MailboxDescriptor[] = [
-    { path: '[Gmail]/Spam', specialUse: '\\Junk' },
-    { path: '[Gmail]/Trash', specialUse: '\\Trash' },
-    { path: 'INBOX' }
+    { path: '[Gmail]/Spam', flags: ['\\Junk'] },
+    { path: '[Gmail]/Trash', flags: ['\\Trash'] },
+    { path: 'INBOX', flags: [] }
   ];
   const snapshots = new Map<string, MailboxUidSnapshot>([
     ['[Gmail]/Spam', { uidValidity: '101', uids: [8, 3] }],
@@ -64,7 +69,7 @@ test('mailbox cleanup marks only unread UIDs snapshotted before human confirmati
   const connection: CleanupMailboxConnection = {
     listMailboxes: async () => mailboxes,
     snapshotUnread: async (path) => snapshots.get(path)!,
-    markSeen: async (path, uidValidity, uids) => {
+    markSeen: async (_target, path, uidValidity, uids) => {
       marked.push({ path, uidValidity, uids: [...uids] });
       return uids.length;
     }
@@ -79,7 +84,7 @@ test('mailbox cleanup marks only unread UIDs snapshotted before human confirmati
   });
 
   assert.equal(result.outcome, 'applied');
-  assert.equal(result.markedRead, 3);
+  assert.equal(result.verifiedRead, 3);
   assert.deepEqual(marked, [
     { path: '[Gmail]/Spam', uidValidity: '101', uids: [3, 8] },
     { path: '[Gmail]/Trash', uidValidity: '202', uids: [12] }
@@ -89,13 +94,13 @@ test('mailbox cleanup marks only unread UIDs snapshotted before human confirmati
 test('post-confirmation folder failure returns a partial outcome without reflecting server errors', async () => {
   const connection: CleanupMailboxConnection = {
     listMailboxes: async () => [
-      { path: '[Gmail]/Spam', specialUse: '\\Junk' },
-      { path: '[Gmail]/Trash', specialUse: '\\Trash' }
+      { path: '[Gmail]/Spam', flags: ['\\Junk'] },
+      { path: '[Gmail]/Trash', flags: ['\\Trash'] }
     ],
     snapshotUnread: async (path) => path.endsWith('Spam')
       ? { uidValidity: '101', uids: [3, 8] }
       : { uidValidity: '202', uids: [12] },
-    markSeen: async (path, _uidValidity, uids) => {
+    markSeen: async (_target, path, _uidValidity, uids) => {
       if (path.endsWith('Trash')) throw new Error('remote secret diagnostic');
       return uids.length;
     }
@@ -110,10 +115,134 @@ test('post-confirmation folder failure returns a partial outcome without reflect
       trash: { unreadCount: 1 },
       totalUnread: 3
     },
-    markedRead: 2,
+    verifiedRead: 2,
     incompleteFolders: ['trash']
   });
   assert.doesNotMatch(JSON.stringify(result), /remote secret diagnostic/);
+});
+
+test('mailbox cleanup trusts only unique raw server-declared special-use flags', async () => {
+  let markCalls = 0;
+  const snapshots = async (): Promise<MailboxUidSnapshot> => ({ uidValidity: '1', uids: [1] });
+  const markSeen = async (): Promise<number> => { markCalls += 1; return 1; };
+
+  await assert.rejects(
+    () => runMailboxCleanup({
+      listMailboxes: async () => [
+        { path: '[Gmail]/Spam', flags: [], specialUse: '\\Junk' } as unknown as MailboxDescriptor,
+        { path: '[Gmail]/Trash', flags: ['\\Trash'] } as unknown as MailboxDescriptor
+      ],
+      snapshotUnread: snapshots,
+      markSeen
+    }, async () => true),
+    /spam special-use mailbox is missing or ambiguous/
+  );
+
+  await assert.rejects(
+    () => runMailboxCleanup({
+      listMailboxes: async () => [
+        { path: '[Gmail]/Spam', flags: ['\\Junk'], specialUse: '\\Junk' } as unknown as MailboxDescriptor,
+        { path: 'Other Spam', flags: ['\\Junk'] } as unknown as MailboxDescriptor,
+        { path: '[Gmail]/Trash', flags: ['\\Trash'] } as unknown as MailboxDescriptor
+      ],
+      snapshotUnread: snapshots,
+      markSeen
+    }, async () => true),
+    /spam special-use mailbox is missing or ambiguous/
+  );
+  assert.equal(markCalls, 0);
+});
+
+test('mailbox cleanup revalidates each authoritative role and path before mutation', async () => {
+  let listCalls = 0;
+  let markCalls = 0;
+  const connection: CleanupMailboxConnection = {
+    listMailboxes: async () => {
+      listCalls += 1;
+      return listCalls === 1
+        ? [
+            { path: '[Gmail]/Spam', flags: ['\\Junk'] } as unknown as MailboxDescriptor,
+            { path: '[Gmail]/Trash', flags: ['\\Trash'] } as unknown as MailboxDescriptor
+          ]
+        : [
+            { path: 'Reassigned Spam', flags: ['\\Junk'] } as unknown as MailboxDescriptor,
+            { path: '[Gmail]/Trash', flags: ['\\Trash'] } as unknown as MailboxDescriptor
+          ];
+    },
+    snapshotUnread: async (path) => ({
+      uidValidity: path.endsWith('Spam') ? '101' : '202',
+      uids: path.endsWith('Spam') ? [3] : []
+    }),
+    markSeen: async () => { markCalls += 1; return 1; }
+  };
+
+  const result = await runMailboxCleanup(connection, async () => true);
+  assert.equal(result.outcome, 'partial');
+  assert.deepEqual(result.incompleteFolders, ['spam']);
+  assert.equal(result.verifiedRead, 0);
+  assert.equal(markCalls, 0);
+  assert.ok(listCalls >= 2);
+});
+
+test('Gmail IMAP adapter rejects SEARCH failure and installs a redacting error listener', async () => {
+  let errorListener: ((error: Error) => void) | undefined;
+  const client = {
+    mailbox: false as false | { uidValidity: bigint },
+    on: (event: string, listener: (error: Error) => void) => {
+      if (event === 'error') errorListener = listener;
+      return client;
+    },
+    connect: async () => undefined,
+    list: async () => [],
+    getMailboxLock: async () => {
+      client.mailbox = { uidValidity: 1n };
+      return { path: '[Gmail]/Spam', release: () => undefined };
+    },
+    search: async () => false as false,
+    messageFlagsAdd: async () => true,
+    logout: async () => undefined,
+    close: () => undefined
+  } as GmailImapClient;
+  const connection = new GmailImapCleanupConnection(
+    { username: 'owner@gmail.com', password: 'abcdefghijklmnop' },
+    () => client
+  );
+
+  assert.equal(typeof errorListener, 'function');
+  await assert.rejects(() => connection.snapshotUnread('[Gmail]/Spam'), /Gmail IMAP operation failed/);
+  errorListener?.(new Error('remote secret diagnostic'));
+  await assert.rejects(() => connection.listMailboxes(), /Gmail IMAP operation failed/);
+});
+
+test('Gmail IMAP adapter verifies the approved UID set after STORE', async () => {
+  let searchCall = 0;
+  const client = {
+    mailbox: false as false | { uidValidity: bigint },
+    on: () => client,
+    connect: async () => undefined,
+    list: async () => [
+      { path: '[Gmail]/Spam', flags: new Set(['\\Junk']) },
+      { path: '[Gmail]/Trash', flags: new Set(['\\Trash']) }
+    ],
+    getMailboxLock: async (path: string) => {
+      client.mailbox = { uidValidity: path.endsWith('Spam') ? 101n : 202n };
+      return { path, release: () => undefined };
+    },
+    search: async () => {
+      searchCall += 1;
+      return [5];
+    },
+    messageFlagsAdd: async () => true,
+    logout: async () => undefined,
+    close: () => undefined
+  } as GmailImapClient;
+  const connection = new GmailImapCleanupConnection(
+    { username: 'owner@gmail.com', password: 'abcdefghijklmnop' },
+    () => client
+  );
+
+  assert.equal(await connection.markSeen('trash', '[Gmail]/Trash', '202', [5, 9]), 1);
+  assert.equal(searchCall, 1);
 });
 
 test('Gmail cleanup credentials use the absolute pass pin instead of PATH', async () => {
@@ -204,10 +333,11 @@ test('Gmail IMAP adapter uses UID locks and rejects mailbox identity changes bef
   let clientOptions: unknown;
   const client: GmailImapClient = {
     mailbox: false,
+    on: (_event, _listener) => client,
     connect: async () => { events.push('connect'); },
     list: async () => [
-      { path: '[Gmail]/Spam', specialUse: '\\Junk' },
-      { path: '[Gmail]/Trash', specialUse: '\\Trash' }
+      { path: '[Gmail]/Spam', flags: new Set(['\\Junk']) },
+      { path: '[Gmail]/Trash', flags: new Set(['\\Trash']) }
     ],
     getMailboxLock: async (path, options) => {
       events.push(['lock', path, options]);
@@ -235,17 +365,17 @@ test('Gmail IMAP adapter uses UID locks and rejects mailbox identity changes bef
 
   await connection.connect();
   assert.deepEqual(await connection.listMailboxes(), [
-    { path: '[Gmail]/Spam', specialUse: '\\Junk' },
-    { path: '[Gmail]/Trash', specialUse: '\\Trash' }
+    { path: '[Gmail]/Spam', flags: ['\\Junk'] },
+    { path: '[Gmail]/Trash', flags: ['\\Trash'] }
   ]);
   assert.deepEqual(await connection.snapshotUnread('[Gmail]/Spam'), {
     uidValidity: '101',
     uids: [9, 5]
   });
-  assert.equal(await connection.markSeen('[Gmail]/Trash', '202', [5, 9]), 2);
+  assert.equal(await connection.markSeen('trash', '[Gmail]/Trash', '202', [5, 9]), 2);
   await assert.rejects(
-    () => connection.markSeen('[Gmail]/Trash', '999', [5]),
-    /mailbox identity changed/
+    () => connection.markSeen('trash', '[Gmail]/Trash', '999', [5]),
+    /Gmail IMAP operation failed/
   );
   await connection.disconnect();
 
@@ -254,7 +384,8 @@ test('Gmail IMAP adapter uses UID locks and rejects mailbox identity changes bef
     password: 'abcdefghijklmnop'
   }));
   assert.deepEqual(events.filter((event) => Array.isArray(event) && event[0] === 'search'), [
-    ['search', { seen: false }, { uid: true }]
+    ['search', { seen: false }, { uid: true }],
+    ['search', { seen: true, uid: '5,9' }, { uid: true }]
   ]);
   assert.deepEqual(events.filter((event) => Array.isArray(event) && event[0] === 'flags'), [
     ['flags', [5, 9], ['\\Seen'], { uid: true }]
@@ -267,23 +398,29 @@ test('mailbox cleanup command prints only counts and clears its local credential
   const output: string[] = [];
   const events: string[] = [];
   const auditEvents: unknown[] = [];
+  let active = false;
+  let connectionCount = 0;
   const credentials = { username: 'owner@gmail.com', password: 'abcdefghijklmnop' };
   const connection: CleanupMailboxConnection & { connect(): Promise<void>; disconnect(): Promise<void> } = {
-    connect: async () => { events.push('connect'); },
-    disconnect: async () => { events.push('disconnect'); },
+    connect: async () => { active = true; events.push('connect'); },
+    disconnect: async () => { active = false; events.push('disconnect'); },
     listMailboxes: async () => [
-      { path: '[Gmail]/Spam', specialUse: '\\Junk' },
-      { path: '[Gmail]/Trash', specialUse: '\\Trash' }
+      { path: '[Gmail]/Spam', flags: ['\\Junk'] },
+      { path: '[Gmail]/Trash', flags: ['\\Trash'] }
     ],
     snapshotUnread: async (path) => path.endsWith('Spam')
       ? { uidValidity: '101', uids: [3, 8] }
       : { uidValidity: '202', uids: [12] },
-    markSeen: async (_path, _uidValidity, uids) => uids.length
+    markSeen: async (_target, _path, _uidValidity, uids) => uids.length
   };
   const dependencies: MailboxCleanupCommandDependencies = {
     loadCredentials: async () => credentials,
-    createConnection: () => connection,
+    createConnection: () => {
+      connectionCount += 1;
+      return connection;
+    },
     prompt: async (question) => {
+      assert.equal(active, false);
       output.push(question);
       return 'MARK READ';
     },
@@ -297,18 +434,16 @@ test('mailbox cleanup command prints only counts and clears its local credential
   }, dependencies);
 
   assert.equal(result.outcome, 'applied');
-  assert.equal(result.markedRead, 3);
-  assert.deepEqual(events, ['connect', 'disconnect']);
+  assert.equal(result.verifiedRead, 3);
+  assert.equal(connectionCount, 2);
+  assert.deepEqual(events, ['connect', 'disconnect', 'connect', 'disconnect']);
   assert.equal(credentials.password, '');
   assert.deepEqual(auditEvents, [{
     action: 'mailbox-cleanup',
     provider: 'gmail-smtp',
-    mailbox: 'owner@gmail.com',
     outcome: 'applied',
-    spamUnread: 2,
-    trashUnread: 1,
     snapshotTotal: 3,
-    markedRead: 3,
+    verifiedRead: 3,
     incompleteFolders: []
   }]);
   assert.doesNotMatch(JSON.stringify(auditEvents), /abcdefghijklmnop/);
@@ -317,8 +452,61 @@ test('mailbox cleanup command prints only counts and clears its local credential
   assert.match(transcript, /Unread Spam: 2/);
   assert.match(transcript, /Unread Trash: 1/);
   assert.match(transcript, /Type MARK READ/);
-  assert.match(transcript, /Marked 3 messages as read/);
+  assert.match(transcript, /Verified 3 messages are read/);
   assert.doesNotMatch(transcript, /abcdefghijklmnop/);
+});
+
+test('post-mutation disconnect, audit, and terminal failures do not relabel a completed cleanup', async () => {
+  let mutationCompleted = false;
+  let auditCalls = 0;
+  let connectionCount = 0;
+  const credentials = { username: 'owner@gmail.com', password: 'abcdefghijklmnop' };
+  const connection: ManagedCleanupConnection = {
+    connect: async () => undefined,
+    disconnect: async () => {
+      if (mutationCompleted) throw new Error('raw disconnect diagnostic');
+    },
+    listMailboxes: async () => [
+      { path: '[Gmail]/Spam', flags: ['\\Junk'] },
+      { path: '[Gmail]/Trash', flags: ['\\Trash'] }
+    ],
+    snapshotUnread: async (path) => ({
+      uidValidity: path.endsWith('Spam') ? '101' : '202',
+      uids: path.endsWith('Spam') ? [3] : []
+    }),
+    markSeen: async (_target, _path, _uidValidity, uids) => {
+      mutationCompleted = true;
+      return uids.length;
+    }
+  };
+
+  const result = await runMailboxCleanupCommand({
+    provider: 'gmail',
+    configPath: '/private/config.yaml'
+  }, {
+    loadCredentials: async () => credentials,
+    createConnection: () => {
+      connectionCount += 1;
+      return connection;
+    },
+    prompt: async () => 'MARK READ',
+    recordAudit: async () => {
+      auditCalls += 1;
+      throw new Error('raw audit diagnostic');
+    },
+    write: (message) => {
+      if (message.startsWith('WARNING:') || message.startsWith('Marked ')) {
+        throw new Error('terminal unavailable');
+      }
+    }
+  });
+
+  assert.equal(result.outcome, 'applied');
+  assert.equal(result.verifiedRead, 1);
+  assert.equal(mutationCompleted, true);
+  assert.equal(connectionCount, 2);
+  assert.equal(auditCalls, 1);
+  assert.equal(credentials.password, '');
 });
 
 test('production mailbox cleanup wrapper preserves the credential boundary and fixed operation', async () => {
@@ -344,6 +532,38 @@ test('production mailbox cleanup wrapper preserves the credential boundary and f
   assert.match(installer, /"\$INSTALL_DIR\/scripts\/mailbox-cleanup\.sh"/);
 });
 
+test('mailbox cleanup help cannot execute an attacker-provided PATH command before validation', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-mailbox-wrapper-'));
+  try {
+    const binDir = join(dir, 'bin');
+    const copiedWrapper = join(dir, 'mailbox-cleanup.sh');
+    const marker = join(dir, 'attacker-ran');
+    await mkdir(binDir);
+    await writeFile(
+      join(binDir, 'cat'),
+      '#!/bin/sh\nprintf exploited > "$ATTACK_MARKER"\n',
+      { encoding: 'utf8', mode: 0o755 }
+    );
+    const source = await readFile(new URL('../scripts/mailbox-cleanup.sh', import.meta.url), 'utf8');
+    await writeFile(
+      copiedWrapper,
+      source.replace(
+        "readonly TRUSTED_PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'",
+        `readonly TRUSTED_PATH='${binDir}'`
+      ),
+      { encoding: 'utf8', mode: 0o755 }
+    );
+
+    const { stdout } = await execFile('/bin/bash', [copiedWrapper, '--help'], {
+      env: { ...process.env, ATTACK_MARKER: marker }
+    });
+    assert.match(stdout, /Usage: sudo .*mailbox-cleanup\.sh gmail/);
+    await assert.rejects(() => readFile(marker, 'utf8'));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('mailbox cleanup audit appends counts-only JSONL and rejects symlinks', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'agent-gate-mailbox-audit-'));
   try {
@@ -355,12 +575,9 @@ test('mailbox cleanup audit appends counts-only JSONL and rejects symlinks', asy
     const event = {
       action: 'mailbox-cleanup' as const,
       provider: 'gmail-smtp' as const,
-      mailbox: 'owner@gmail.com',
       outcome: 'applied' as const,
-      spamUnread: 2,
-      trashUnread: 1,
       snapshotTotal: 3,
-      markedRead: 3,
+      verifiedRead: 3,
       incompleteFolders: []
     };
 
@@ -388,8 +605,8 @@ test('mailbox cleanup skips confirmation for no-op and performs no writes when c
   let markCalls = 0;
   const baseConnection = {
     listMailboxes: async () => [
-      { path: '[Gmail]/Spam', specialUse: '\\Junk' },
-      { path: '[Gmail]/Trash', specialUse: '\\Trash' }
+      { path: '[Gmail]/Spam', flags: ['\\Junk'] },
+      { path: '[Gmail]/Trash', flags: ['\\Trash'] }
     ],
     markSeen: async () => { markCalls += 1; return 0; }
   };

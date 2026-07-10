@@ -5,8 +5,15 @@ import { DraftWatcher } from './watcher.js';
 import { AgentGateBot } from './bot.js';
 import { Executor } from './executor.js';
 import { formatIsolationReport, verifyDraftDirectoryIsolation } from './security.js';
+import {
+  clearServiceReady,
+  configuredReadyFile,
+  publishServiceReady
+} from './readiness.js';
 
 async function main(): Promise<void> {
+  const readyFile = configuredReadyFile();
+  await clearServiceReady(readyFile);
   const config = await loadConfig();
   const inboxDir = resolve(config.watch.directory);
   const draftsRoot = dirname(inboxDir);
@@ -35,15 +42,15 @@ async function main(): Promise<void> {
   await bot.start();
   console.log('[agent-gate] bot handlers registered');
 
-  bot.poll().catch((err) => {
+  bot.poll().catch(async (err) => {
     console.error('[agent-gate] bot polling error:', err);
+    await clearServiceReady(readyFile).catch(() => undefined);
     process.exit(1);
   });
 
-  console.log('[agent-gate] ready ✓');
-
   const shutdown = async (signal: string): Promise<void> => {
     console.log(`[agent-gate] received ${signal}, shutting down...`);
+    await clearServiceReady(readyFile).catch(() => undefined);
     await bot.stop();
     await watcher.stop();
     process.exit(0);
@@ -51,6 +58,9 @@ async function main(): Promise<void> {
 
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
+
+  await publishServiceReady(readyFile);
+  console.log('[agent-gate] ready ✓');
 }
 
 if (process.argv.slice(2).includes('--help')) {

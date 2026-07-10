@@ -1,5 +1,11 @@
 import { ImapFlow, type ImapFlowOptions } from 'imapflow';
-import type { CleanupMailboxConnection, MailboxDescriptor, MailboxUidSnapshot } from './cleanup.js';
+import {
+  selectAuthoritativeMailbox,
+  type CleanupMailboxConnection,
+  type CleanupTarget,
+  type MailboxDescriptor,
+  type MailboxUidSnapshot
+} from './cleanup.js';
 import type { GmailCleanupCredentials } from './config.js';
 
 export function buildGmailImapOptions(credentials: GmailCleanupCredentials): ImapFlowOptions {
@@ -28,15 +34,26 @@ export function buildGmailImapOptions(credentials: GmailCleanupCredentials): Ima
   };
 }
 
+interface GmailListEntry {
+  path: string;
+  flags: Set<string>;
+}
+
+interface GmailSearchQuery {
+  seen: boolean;
+  uid?: string;
+}
+
 export interface GmailImapClient {
   mailbox: false | { uidValidity: bigint };
+  on(event: 'error', listener: (error: Error) => void): this;
   connect(): Promise<void>;
-  list(): Promise<ReadonlyArray<{ path: string; specialUse?: string }>>;
+  list(): Promise<ReadonlyArray<GmailListEntry>>;
   getMailboxLock(
     path: string,
     options: { readOnly: boolean }
   ): Promise<{ path: string; release(): void }>;
-  search(query: { seen: boolean }, options: { uid: true }): Promise<number[] | false>;
+  search(query: GmailSearchQuery, options: { uid: true }): Promise<number[] | false>;
   messageFlagsAdd(
     uids: readonly number[],
     flags: string[],
@@ -53,57 +70,104 @@ const defaultClientFactory: GmailImapClientFactory = (options) =>
 
 export class GmailImapCleanupConnection implements CleanupMailboxConnection {
   private readonly client: GmailImapClient;
+  private clientFailed = false;
 
   constructor(
     credentials: GmailCleanupCredentials,
     clientFactory: GmailImapClientFactory = defaultClientFactory
   ) {
     this.client = clientFactory(buildGmailImapOptions(credentials));
+    this.client.on('error', () => {
+      this.clientFailed = true;
+    });
   }
 
-  async connect(): Promise<void> {
-    await this.client.connect();
-  }
-
-  async listMailboxes(): Promise<readonly MailboxDescriptor[]> {
-    return (await this.client.list()).map(({ path, specialUse }) => ({ path, specialUse }));
-  }
-
-  async snapshotUnread(path: string): Promise<MailboxUidSnapshot> {
-    const lock = await this.client.getMailboxLock(path, { readOnly: true });
+  private async checked<T>(operation: () => Promise<T>): Promise<T> {
     try {
-      const mailbox = this.client.mailbox;
-      if (!mailbox) throw new Error('Gmail mailbox selection failed');
-      const uids = await this.client.search({ seen: false }, { uid: true });
-      return { uidValidity: mailbox.uidValidity.toString(), uids: uids || [] };
-    } finally {
-      lock.release();
+      if (this.clientFailed) throw new Error('connection unavailable');
+      const result = await operation();
+      if (this.clientFailed) throw new Error('connection unavailable');
+      return result;
+    } catch {
+      throw new Error('Gmail IMAP operation failed');
     }
   }
 
+  private async rawMailboxes(): Promise<MailboxDescriptor[]> {
+    const entries = await this.client.list();
+    return entries.map(({ path, flags }) => ({ path, flags: [...flags] }));
+  }
+
+  async connect(): Promise<void> {
+    await this.checked(() => this.client.connect());
+  }
+
+  async listMailboxes(): Promise<readonly MailboxDescriptor[]> {
+    return this.checked(() => this.rawMailboxes());
+  }
+
+  async snapshotUnread(path: string): Promise<MailboxUidSnapshot> {
+    return this.checked(async () => {
+      const lock = await this.client.getMailboxLock(path, { readOnly: true });
+      try {
+        const mailbox = this.client.mailbox;
+        if (!mailbox) throw new Error('mailbox selection failed');
+        const uids = await this.client.search({ seen: false }, { uid: true });
+        if (!Array.isArray(uids)) throw new Error('UID SEARCH failed');
+        return { uidValidity: mailbox.uidValidity.toString(), uids: [...uids] };
+      } finally {
+        lock.release();
+      }
+    });
+  }
+
   async markSeen(
+    target: CleanupTarget,
     path: string,
     expectedUidValidity: string,
     uids: readonly number[]
   ): Promise<number> {
-    const lock = await this.client.getMailboxLock(path, { readOnly: false });
-    try {
-      const mailbox = this.client.mailbox;
-      if (!mailbox || mailbox.uidValidity.toString() !== expectedUidValidity) {
-        throw new Error('Gmail mailbox identity changed before cleanup');
+    if (uids.length === 0) return 0;
+    return this.checked(async () => {
+      const lock = await this.client.getMailboxLock(path, { readOnly: false });
+      try {
+        const authoritative = selectAuthoritativeMailbox(await this.rawMailboxes(), target);
+        if (authoritative.path !== path) throw new Error('mailbox role changed');
+
+        const mailbox = this.client.mailbox;
+        if (!mailbox || mailbox.uidValidity.toString() !== expectedUidValidity) {
+          throw new Error('mailbox identity changed');
+        }
+
+        const approvedUids = [...uids];
+        const submitted = await this.client.messageFlagsAdd(approvedUids, ['\\Seen'], { uid: true });
+        if (!submitted) return 0;
+
+        const seen = await this.client.search(
+          { seen: true, uid: approvedUids.join(',') },
+          { uid: true }
+        );
+        if (!Array.isArray(seen)) return 0;
+        const approved = new Set(approvedUids);
+        const verified = new Set(
+          seen.filter((uid) => Number.isSafeInteger(uid) && approved.has(uid))
+        );
+        return verified.size;
+      } finally {
+        lock.release();
       }
-      const applied = await this.client.messageFlagsAdd(uids, ['\\Seen'], { uid: true });
-      return applied ? uids.length : 0;
-    } finally {
-      lock.release();
-    }
+    });
   }
 
   async disconnect(): Promise<void> {
     try {
       await this.client.logout();
     } catch {
-      this.client.close();
+      try {
+        this.client.close();
+      } catch {
+        // The connection is already unusable; never reflect transport diagnostics.
+      }
     }
   }
 }

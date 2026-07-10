@@ -13,13 +13,12 @@ INSTALL_DIR="$(cd "$(/usr/bin/dirname -- "$SCRIPT_PATH")/.." && pwd -P)"
 CONFIG_PATH="$INSTALL_DIR/config/config.yaml"
 
 usage() {
-  cat <<USAGE
-Usage: sudo $0 gmail
-
-Previews unread Gmail Spam and Trash counts, then requires the exact phrase
-MARK READ before changing only the snapshotted messages. Nothing is deleted,
-moved, archived, or emptied. The Gmail App Password stays inside agentgate.
-USAGE
+  printf '%s\n' \
+    "Usage: sudo $0 gmail" \
+    "" \
+    "Previews unread Gmail Spam and Trash counts, then requires the exact phrase" \
+    "MARK READ before changing only the snapshotted messages. Nothing is deleted," \
+    "moved, archived, or emptied. The Gmail App Password stays inside agentgate."
 }
 
 validate_trusted_path() {

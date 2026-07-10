@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { promptText } from './oauth/prompts.js';
+import { promptLiteral } from './oauth/prompts.js';
 import {
   recordMailboxCleanupAudit,
   type MailboxCleanupAuditEvent
@@ -9,7 +9,13 @@ import {
 import { parseMailboxCleanupArgs, type MailboxCleanupOptions } from './mailbox/cli-options.js';
 import { isCleanupConfirmed } from './mailbox/confirmation.js';
 import { loadGmailCleanupCredentials, type GmailCleanupCredentials } from './mailbox/config.js';
-import { runMailboxCleanup, type CleanupMailboxConnection, type CleanupResult } from './mailbox/cleanup.js';
+import {
+  applyMailboxCleanup,
+  prepareMailboxCleanup,
+  type CleanupMailboxConnection,
+  type CleanupResult,
+  type MailboxCleanupPlan
+} from './mailbox/cleanup.js';
 import { GmailImapCleanupConnection } from './mailbox/gmail-imap.js';
 
 export interface ManagedCleanupConnection extends CleanupMailboxConnection {
@@ -28,7 +34,7 @@ export interface MailboxCleanupCommandDependencies {
 const defaultDependencies: MailboxCleanupCommandDependencies = {
   loadCredentials: (configPath) => loadGmailCleanupCredentials(configPath),
   createConnection: (credentials) => new GmailImapCleanupConnection(credentials),
-  prompt: (question) => promptText(question),
+  prompt: (question) => promptLiteral(question),
   recordAudit: (event) => recordMailboxCleanupAudit(
     process.env.AGENT_GATE_AUDIT_LOG,
     event
@@ -38,67 +44,132 @@ const defaultDependencies: MailboxCleanupCommandDependencies = {
 
 const countLabel = (count: number): string => count === 1 ? 'message' : 'messages';
 
+const safeWrite = (dependencies: MailboxCleanupCommandDependencies, message: string): void => {
+  try {
+    dependencies.write(message);
+  } catch {
+    // A completed remote action must never be reclassified because local output failed.
+  }
+};
+
+const getPreviewPlan = async (
+  credentials: GmailCleanupCredentials,
+  dependencies: MailboxCleanupCommandDependencies
+): Promise<MailboxCleanupPlan> => {
+  const connection = dependencies.createConnection(credentials);
+  let plan: MailboxCleanupPlan | undefined;
+  let failed = false;
+  try {
+    await connection.connect();
+    plan = await prepareMailboxCleanup(connection);
+  } catch {
+    failed = true;
+  } finally {
+    try {
+      await connection.disconnect();
+    } catch {
+      failed = true;
+    }
+  }
+  if (failed || !plan) throw new Error('preview failed');
+  return plan;
+};
+
+const applyWithFreshConnection = async (
+  credentials: GmailCleanupCredentials,
+  plan: MailboxCleanupPlan,
+  dependencies: MailboxCleanupCommandDependencies
+): Promise<CleanupResult> => {
+  const connection = dependencies.createConnection(credentials);
+  let result: CleanupResult | undefined;
+  let failedBeforeResult = false;
+  try {
+    await connection.connect();
+    result = await applyMailboxCleanup(connection, plan);
+  } catch {
+    failedBeforeResult = true;
+  } finally {
+    try {
+      await connection.disconnect();
+    } catch {
+      if (!result) failedBeforeResult = true;
+    }
+  }
+  if (failedBeforeResult || !result) throw new Error('apply failed');
+  return result;
+};
+
+const persistAndReport = async (
+  result: CleanupResult,
+  dependencies: MailboxCleanupCommandDependencies
+): Promise<void> => {
+  const auditEvent: MailboxCleanupAuditEvent = {
+    action: 'mailbox-cleanup',
+    provider: 'gmail-smtp',
+    outcome: result.outcome,
+    snapshotTotal: result.preview.totalUnread,
+    verifiedRead: result.verifiedRead,
+    incompleteFolders: result.outcome === 'partial' ? [...result.incompleteFolders] : []
+  };
+
+  try {
+    await dependencies.recordAudit(auditEvent);
+  } catch {
+    safeWrite(dependencies, 'WARNING: Mailbox cleanup result could not be persisted to the audit log.');
+  }
+
+  if (result.outcome === 'no-op') {
+    safeWrite(dependencies, 'Nothing to change. No messages were deleted or moved.');
+  } else if (result.outcome === 'cancelled') {
+    safeWrite(dependencies, 'Cancelled. No messages were changed.');
+  } else if (result.outcome === 'partial') {
+    safeWrite(
+      dependencies,
+      `Verified ${result.verifiedRead} ${countLabel(result.verifiedRead)} are read. ` +
+      `Cleanup was incomplete for: ${result.incompleteFolders.join(', ')}. Rerunning is safe.`
+    );
+  } else {
+    safeWrite(
+      dependencies,
+      `Verified ${result.verifiedRead} ${countLabel(result.verifiedRead)} are read. ` +
+      'No messages were deleted or moved.'
+    );
+  }
+};
+
 export async function runMailboxCleanupCommand(
   options: MailboxCleanupOptions,
   dependencies: MailboxCleanupCommandDependencies = defaultDependencies
 ): Promise<CleanupResult> {
   const credentials = await dependencies.loadCredentials(options.configPath);
-  let connection: ManagedCleanupConnection | undefined;
+  let result: CleanupResult;
   try {
-    connection = dependencies.createConnection(credentials);
     dependencies.write(`Gmail mailbox: ${credentials.username}`);
-    await connection.connect();
-    const result = await runMailboxCleanup(connection, async (preview) => {
-      dependencies.write(`Unread Spam: ${preview.spam.unreadCount}`);
-      dependencies.write(`Unread Trash: ${preview.trash.unreadCount}`);
-      dependencies.write(`Total unread to mark read: ${preview.totalUnread}`);
+    const plan = await getPreviewPlan(credentials, dependencies);
+    dependencies.write(`Unread Spam: ${plan.preview.spam.unreadCount}`);
+    dependencies.write(`Unread Trash: ${plan.preview.trash.unreadCount}`);
+    dependencies.write(`Total unread to mark read: ${plan.preview.totalUnread}`);
+
+    if (plan.preview.totalUnread === 0) {
+      result = { outcome: 'no-op', preview: plan.preview, verifiedRead: 0 };
+    } else {
       const answer = await dependencies.prompt(
         'Type MARK READ to mark exactly this unread Spam/Trash snapshot as read'
       );
-      return isCleanupConfirmed(answer);
-    });
-
-    const auditEvent: MailboxCleanupAuditEvent = {
-      action: 'mailbox-cleanup',
-      provider: 'gmail-smtp',
-      mailbox: credentials.username,
-      outcome: result.outcome,
-      spamUnread: result.preview.spam.unreadCount,
-      trashUnread: result.preview.trash.unreadCount,
-      snapshotTotal: result.preview.totalUnread,
-      markedRead: result.markedRead,
-      incompleteFolders: result.outcome === 'partial' ? [...result.incompleteFolders] : []
-    };
-    await dependencies.recordAudit(auditEvent).catch(() => {
-      dependencies.write(
-        'WARNING: Mailbox cleanup result could not be persisted to the audit log.'
-      );
-    });
-
-    if (result.outcome === 'no-op') {
-      dependencies.write('Unread Spam: 0');
-      dependencies.write('Unread Trash: 0');
-      dependencies.write('Nothing to change. No messages were deleted or moved.');
-    } else if (result.outcome === 'cancelled') {
-      dependencies.write('Cancelled. No messages were changed.');
-    } else if (result.outcome === 'partial') {
-      dependencies.write(
-        `Marked ${result.markedRead} ${countLabel(result.markedRead)} as read. ` +
-        `Cleanup was incomplete for: ${result.incompleteFolders.join(', ')}. Rerunning is safe.`
-      );
-    } else {
-      dependencies.write(
-        `Marked ${result.markedRead} ${countLabel(result.markedRead)} as read. ` +
-        'No messages were deleted or moved.'
-      );
+      if (!isCleanupConfirmed(answer)) {
+        result = { outcome: 'cancelled', preview: plan.preview, verifiedRead: 0 };
+      } else {
+        result = await applyWithFreshConnection(credentials, plan, dependencies);
+      }
     }
-    return result;
   } catch {
-    throw new Error('Gmail mailbox cleanup failed before completion');
-  } finally {
     credentials.password = '';
-    if (connection) await connection.disconnect().catch(() => undefined);
+    throw new Error('Gmail mailbox cleanup failed before completion');
   }
+
+  credentials.password = '';
+  await persistAndReport(result, dependencies);
+  return result;
 }
 
 const usage = (): string => `Usage: agent-gate-mailbox-cleanup gmail [--config PATH]
