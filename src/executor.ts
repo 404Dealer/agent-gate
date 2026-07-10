@@ -96,18 +96,17 @@ export class Executor {
   }
 
   private toExecutionResult(result: ProviderResult): ExecutionResult {
-    const outcome = result.outcome === 'partial' ? 'partial' : 'sent';
-    return {
-      outcome,
-      details: sanitizeError(result.details ?? ''),
-      ...(outcome === 'partial'
-        ? {
-            acceptedCount: result.acceptedCount ?? 0,
-            rejectedCount: result.rejectedCount ?? 0,
-            rejectedRecipients: [...(result.rejectedRecipients ?? [])]
-          }
-        : {})
-    };
+    const details = sanitizeError(result.details ?? '');
+    if (result.outcome === 'partial') {
+      return {
+        outcome: 'partial',
+        details,
+        acceptedCount: result.acceptedCount,
+        rejectedCount: result.rejectedCount,
+        rejectedRecipients: [...result.rejectedRecipients]
+      };
+    }
+    return { outcome: 'sent', details };
   }
 
   private async appendAudit(

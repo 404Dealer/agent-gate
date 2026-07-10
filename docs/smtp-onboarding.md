@@ -125,7 +125,7 @@ SMTP can accept some approved recipients while rejecting others. Agent-gate trea
 
 - the draft is archived under `sent`, not `failed`, because retrying could duplicate delivery;
 - audit records action `partial`, accepted/rejected counts, and rejected addresses only when they match the approved recipient list;
-- Telegram displays an explicit partial-delivery alert and reply;
+- Telegram acknowledges approval before starting SMTP work, then posts an explicit partial-delivery outcome reply;
 - if delivery is accepted but local archive/audit finalization fails, Telegram reports an accepted-delivery record warning rather than a send failure; and
 - the operator should create a new draft only for rejected recipients after confirming the original outcome.
 

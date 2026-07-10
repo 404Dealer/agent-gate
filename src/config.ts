@@ -40,7 +40,7 @@ const ProviderSchema = z.discriminatedUnion('type', [
     host: SmtpHostSchema,
     port: z.number().int().min(1).max(65535),
     tlsMode: z.enum(['implicit', 'starttls']),
-    username: z.string().min(1),
+    username: z.string().trim().min(1),
     password: z.string().min(1),
     fromAddress: z.string().email(),
     displayName: z.string().optional(),

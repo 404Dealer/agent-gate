@@ -6,14 +6,19 @@ import { OutlookEmailProvider } from './email-outlook.js';
 import { SmtpEmailProvider } from './email-smtp.js';
 import { ZohoEmailProvider } from './email-zoho.js';
 
-export interface ProviderResult {
-  outcome?: 'sent' | 'partial';
+interface ProviderResultBase {
   providerMessageId?: string;
   details?: string;
-  acceptedCount?: number;
-  rejectedCount?: number;
-  rejectedRecipients?: string[];
 }
+
+export type ProviderResult =
+  | (ProviderResultBase & { outcome?: 'sent' })
+  | (ProviderResultBase & {
+      outcome: 'partial';
+      acceptedCount: number;
+      rejectedCount: number;
+      rejectedRecipients: string[];
+    });
 
 export interface Provider {
   send(draft: Draft): Promise<ProviderResult>;

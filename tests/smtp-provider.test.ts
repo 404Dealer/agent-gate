@@ -50,7 +50,7 @@ providers:
     host: smtp.gmail.com
     port: 465
     tlsMode: implicit
-    username: sender@gmail.com
+    username: " sender@gmail.com "
     password: app-password
     fromAddress: sender@gmail.com
     displayName: Johnny Silverhand
@@ -68,6 +68,7 @@ audit:
     assert.equal(smtpConfig.host, 'smtp.gmail.com');
     assert.equal(smtpConfig.port, 465);
     assert.equal(smtpConfig.tlsMode, 'implicit');
+    assert.equal(smtpConfig.username, 'sender@gmail.com');
     assert(createProvider(smtpConfig) instanceof SmtpEmailProvider);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -309,16 +310,21 @@ test('smtp provider returns a structured partial outcome to prevent duplicate re
     sendMail: async () => ({
       messageId: '<partial@example.com>',
       accepted: ['recipient@example.com'],
-      rejected: ['cc@example.com']
+      rejected: [
+        'cc@example.com',
+        'server-injected@example.net',
+        { address: 'bcc@example.com' },
+        42
+      ]
     })
   }));
 
   assert.deepEqual(await provider.send(sampleDraft()), {
     outcome: 'partial',
     providerMessageId: '<partial@example.com>',
-    details: 'Email accepted by SMTP for 1 recipient; 1 rejected',
+    details: 'Email accepted by SMTP for 1 recipient; 4 rejected',
     acceptedCount: 1,
-    rejectedCount: 1,
+    rejectedCount: 4,
     rejectedRecipients: ['cc@example.com']
   });
 });

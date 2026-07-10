@@ -153,17 +153,17 @@ export class SmtpEmailProvider implements Provider {
       : undefined;
     const partial = rejectedCount > 0 ? `; ${rejectedCount} rejected` : '';
 
-    return {
-      ...(rejectedCount > 0
-        ? {
-            outcome: 'partial' as const,
-            acceptedCount,
-            rejectedCount,
-            rejectedRecipients: safeRejectedRecipients(payload, info.rejected)
-          }
-        : {}),
-      providerMessageId: messageId,
-      details: `Email accepted by SMTP for ${acceptedCount} ${recipientLabel(acceptedCount)}${partial}`
-    };
+    const details = `Email accepted by SMTP for ${acceptedCount} ${recipientLabel(acceptedCount)}${partial}`;
+    if (rejectedCount > 0) {
+      return {
+        outcome: 'partial',
+        acceptedCount,
+        rejectedCount,
+        rejectedRecipients: safeRejectedRecipients(payload, info.rejected),
+        providerMessageId: messageId,
+        details
+      };
+    }
+    return { providerMessageId: messageId, details };
   }
 }

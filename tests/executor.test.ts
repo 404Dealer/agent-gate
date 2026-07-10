@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentGateConfig } from '../src/config.js';
 import { Executor } from '../src/executor.js';
-import { buildDeliveryNotification } from '../src/bot.js';
+import { buildDeliveryNotification, executeAndNotifyDelivery } from '../src/bot.js';
 import type { Provider, ProviderResult } from '../src/providers/index.js';
 import { DraftSchema } from '../src/schema.js';
 
@@ -103,6 +103,55 @@ test('bot notification preserves the ordinary full-success response', () => {
     callbackText: '✅ Sent successfully!',
     showAlert: false
   });
+});
+
+test('delivery callback is acknowledged before execution and full success is posted afterward', async () => {
+  const events: string[] = [];
+  await executeAndNotifyDelivery(
+    async () => {
+      events.push('execute');
+      return { outcome: 'sent', details: 'accepted' };
+    },
+    {
+      acknowledge: async (text) => { events.push(`ack:${text}`); },
+      reply: async (text) => { events.push(`reply:${text}`); }
+    }
+  );
+
+  assert.deepEqual(events, [
+    'ack:✅ Approved; sending…',
+    'execute',
+    'reply:✅ Sent successfully!'
+  ]);
+});
+
+test('Telegram notification failure after acceptance never becomes a send-failed report', async () => {
+  const events: string[] = [];
+  await executeAndNotifyDelivery(
+    async () => {
+      events.push('execute');
+      return {
+        outcome: 'partial',
+        details: 'partial',
+        acceptedCount: 1,
+        rejectedCount: 1,
+        rejectedRecipients: ['rejected@example.com']
+      };
+    },
+    {
+      acknowledge: async (text) => { events.push(`ack:${text}`); },
+      reply: async (text) => {
+        events.push(`reply:${text}`);
+        throw new Error('Telegram unavailable');
+      }
+    }
+  );
+
+  assert.equal(events[0], 'ack:✅ Approved; sending…');
+  assert.equal(events[1], 'execute');
+  assert.match(events[2] ?? '', /Partial delivery/);
+  assert.equal(events.some((event) => /send failed/i.test(event)), false);
+  assert.equal(events.length, 3);
 });
 
 test('post-acceptance persistence failure never reports delivery as failed', async () => {

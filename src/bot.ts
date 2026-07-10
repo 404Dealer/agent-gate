@@ -71,6 +71,31 @@ export function buildDeliveryNotification(result: ExecutionResult): DeliveryNoti
   };
 }
 
+export interface DeliveryNotificationChannel {
+  acknowledge(text: string): Promise<unknown>;
+  reply(text: string): Promise<unknown>;
+}
+
+export async function executeAndNotifyDelivery(
+  execute: () => Promise<ExecutionResult>,
+  channel: DeliveryNotificationChannel
+): Promise<void> {
+  await channel.acknowledge('✅ Approved; sending…').catch(() => {});
+
+  let result: ExecutionResult;
+  try {
+    result = await execute();
+  } catch (error) {
+    const raw = error instanceof Error ? error.message : String(error);
+    const safeError = raw.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500);
+    await channel.reply(`⚠️ Approved but send failed: ${safeError}`).catch(() => {});
+    return;
+  }
+
+  const notification = buildDeliveryNotification(result);
+  await channel.reply(notification.replyText ?? notification.callbackText).catch(() => {});
+}
+
 const APPROVAL_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const preview = (value: string, limit: number): string => (value.length > limit ? `${value.slice(0, limit)}...` : value);
 export const sha256hex = (value: string): string => createHash('sha256').update(value).digest('hex');
@@ -251,24 +276,13 @@ export class AgentGateBot {
         }
         await ctx.editMessageText(`${originalText}\n\n✅ APPROVED at ${timestamp}`).catch(() => {});
 
-        let result: ExecutionResult;
-        try {
-          result = await this.executor.executeApprovedDraft(approvedPath);
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          await ctx.answerCallbackQuery({ text: '⚠️ Send failed', show_alert: true }).catch(() => {});
-          await ctx.reply(`⚠️ Approved but send failed: ${errMsg}`).catch(() => {});
-          return;
-        }
-
-        const notification = buildDeliveryNotification(result);
-        await ctx.answerCallbackQuery({
-          text: notification.callbackText,
-          show_alert: notification.showAlert
-        }).catch(() => {});
-        if (notification.replyText) {
-          await ctx.reply(notification.replyText).catch(() => {});
-        }
+        await executeAndNotifyDelivery(
+          () => this.executor.executeApprovedDraft(approvedPath),
+          {
+            acknowledge: (text) => ctx.answerCallbackQuery({ text }),
+            reply: (text) => ctx.reply(text)
+          }
+        );
         return;
       }
 
