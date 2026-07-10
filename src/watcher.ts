@@ -2,7 +2,7 @@ import chokidar, { type FSWatcher } from 'chokidar';
 import { EventEmitter } from 'node:events';
 import { lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, resolve } from 'node:path';
-import { DraftSchema, type Draft } from './schema.js';
+import { DraftSchema, updateStatus, type Draft } from './schema.js';
 
 const MAX_DRAFT_SIZE_BYTES = 512 * 1024;
 
@@ -62,6 +62,18 @@ export class DraftWatcher extends EventEmitter {
   async stop(): Promise<void> {
     await this.watcher?.close();
     this.watcher = null;
+  }
+
+  async failPending(filePath: string, error: string): Promise<void> {
+    const pendingPath = resolve(this.pendingDir, basename(filePath));
+    const failedPath = resolve(this.options.rootDir, 'failed', basename(filePath));
+    const raw = await readFile(pendingPath, 'utf8');
+    const draft = DraftSchema.parse(JSON.parse(raw));
+    const failed = updateStatus(draft, 'failed', {
+      approval: { ...draft.approval, error: error.slice(0, 500) }
+    });
+    await writeFile(pendingPath, JSON.stringify(failed, null, 2), 'utf8');
+    await rename(pendingPath, failedPath);
   }
 
   private async handleNewFile(inboxPath: string): Promise<void> {

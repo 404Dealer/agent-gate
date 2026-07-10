@@ -12,6 +12,7 @@ import {
 } from './readiness.js';
 import { GmailInboxBroker, credentialsFromConfig } from './mailbox-broker/gmail-inbox.js';
 import { MailboxBrokerServer } from './mailbox-broker/server.js';
+import { submitTrashProposal } from './mailbox-broker/trash-proposal.js';
 import { MAILBOX_SOCKET_PATH } from './mailbox-broker/protocol.js';
 
 const configuredMailboxBroker = (config: AgentGateConfig): MailboxBrokerServer | null => {
@@ -22,7 +23,12 @@ const configuredMailboxBroker = (config: AgentGateConfig): MailboxBrokerServer |
   if (!gidRaw || !/^[1-9][0-9]*$/.test(gidRaw)) throw new Error('Mailbox broker group is not configured');
   const credentials = credentialsFromConfig(config);
   if (!credentials) return null;
-  return new MailboxBrokerServer(new GmailInboxBroker(credentials), socketPath, Number(gidRaw));
+  return new MailboxBrokerServer(
+    new GmailInboxBroker(credentials),
+    socketPath,
+    Number(gidRaw),
+    (refs, context) => submitTrashProposal(config.watch.directory, refs, context)
+  );
 };
 
 async function main(): Promise<void> {

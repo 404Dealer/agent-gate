@@ -10,7 +10,8 @@ const MAX_RESPONSE_BYTES = 1024 * 1024;
 type ClientRequest =
   | { v: 1; id: string; op: 'list'; unread: boolean; limit: number }
   | { v: 1; id: string; op: 'read'; ref: string }
-  | { v: 1; id: string; op: 'mark-read'; refs: string[] };
+  | { v: 1; id: string; op: 'mark-read'; refs: string[] }
+  | { v: 1; id: string; op: 'propose-trash'; refs: string[]; context: string };
 
 interface ClientResponse {
   v: 1;
@@ -25,6 +26,7 @@ const usage = (): string => [
   '  agent-gate-mailbox list [--unread] [--limit 1-50]',
   '  agent-gate-mailbox read MESSAGE_REF',
   '  agent-gate-mailbox mark-read MESSAGE_REF [MESSAGE_REF ...]',
+  '  agent-gate-mailbox propose-trash MESSAGE_REF [MESSAGE_REF ...] [--context TEXT]',
   '',
   'Outputs JSON. Gmail credentials remain inside the isolated agent-gate service.'
 ].join('\n');
@@ -58,6 +60,17 @@ export function parseMailboxClientArgs(argv: string[]): ClientRequest | 'help' {
   }
   if (command === 'mark-read' && argv.length >= 2 && argv.length <= 21 && argv.slice(1).every(validRef)) {
     return { v: 1, id, op: 'mark-read', refs: argv.slice(1) };
+  }
+  if (command === 'propose-trash') {
+    const contextIndex = argv.indexOf('--context');
+    const hasContext = contextIndex >= 0;
+    if (hasContext && (contextIndex < 2 || contextIndex + 2 !== argv.length)) throw new Error('Invalid mailbox command');
+    const refs = argv.slice(1, hasContext ? contextIndex : argv.length);
+    const context = hasContext ? argv[contextIndex + 1] : 'User requested these exact INBOX messages be moved to Trash';
+    if (refs.length < 1 || refs.length > 20 || !refs.every(validRef) || new Set(refs).size !== refs.length || context.length > 1000) {
+      throw new Error('Invalid mailbox command');
+    }
+    return { v: 1, id, op: 'propose-trash', refs, context };
   }
   throw new Error('Invalid mailbox command');
 }

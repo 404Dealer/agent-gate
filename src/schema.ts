@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const DraftStatusSchema = z.enum(['pending', 'approved', 'denied', 'edited', 'sent', 'failed']);
-export const DraftTypeSchema = z.enum(['email', 'webhook']).catch('email');
+export const DraftTypeSchema = z.enum(['email', 'webhook', 'mailbox-trash']);
 
 export const EmailPayloadSchema = z.object({
   from: z.string().email(),
@@ -20,6 +20,14 @@ export const WebhookPayloadSchema = z.object({
   body: z.unknown().optional()
 });
 
+export const MailboxTrashPayloadSchema = z.object({
+  refs: z.array(z.string().regex(/^[A-Za-z0-9_-]{8,256}$/)).min(1).max(20)
+}).strict().superRefine((payload, ctx) => {
+  if (new Set(payload.refs).size !== payload.refs.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Duplicate mailbox references are not allowed', path: ['refs'] });
+  }
+});
+
 export const ApprovalSchema = z.object({
   approvedBy: z.string().nullable().default(null),
   approvedAt: z.string().nullable().default(null),
@@ -36,22 +44,41 @@ export const MetadataSchema = z.object({
   tags: z.array(z.string()).max(20).optional().default([])
 });
 
-export const DraftSchema = z.object({
+const CommonDraftFields = {
   id: z.string().uuid(),
-  type: DraftTypeSchema,
   status: DraftStatusSchema,
   createdAt: z.string(),
   updatedAt: z.string(),
   source: z.string(),
   provider: z.string(),
-  payload: z.union([EmailPayloadSchema, WebhookPayloadSchema]),
   metadata: MetadataSchema.default({ context: '', priority: 'normal', tags: [] }),
   approval: ApprovalSchema.default({ approvedBy: null, approvedAt: null, telegramMessageId: null, edits: [] })
+};
+
+const EmailDraftSchema = z.object({
+  ...CommonDraftFields,
+  type: z.literal('email'),
+  payload: EmailPayloadSchema
 });
+
+const WebhookDraftSchema = z.object({
+  ...CommonDraftFields,
+  type: z.literal('webhook'),
+  payload: WebhookPayloadSchema
+});
+
+const MailboxTrashDraftSchema = z.object({
+  ...CommonDraftFields,
+  type: z.literal('mailbox-trash'),
+  payload: MailboxTrashPayloadSchema
+});
+
+export const DraftSchema = z.discriminatedUnion('type', [EmailDraftSchema, WebhookDraftSchema, MailboxTrashDraftSchema]);
 
 export type DraftStatus = z.infer<typeof DraftStatusSchema>;
 export type DraftType = z.infer<typeof DraftTypeSchema>;
 export type Draft = z.infer<typeof DraftSchema>;
+export type MailboxTrashDraft = Extract<Draft, { type: 'mailbox-trash' }>;
 
 export function updateStatus(draft: Draft, status: DraftStatus, patch?: Partial<Draft>): Draft {
   return DraftSchema.parse({

@@ -21,7 +21,10 @@ const SAFE_ERRORS = new Set([
   'One or more message references are stale',
   'One or more messages are no longer in INBOX',
   'Gmail mailbox operation failed',
-  'Mailbox broker is busy'
+  'Mailbox broker is busy',
+  'Mailbox references must share one current INBOX identity',
+  'Duplicate mailbox references are not allowed',
+  'Trash proposal is unavailable'
 ]);
 
 const responseLine = (response: MailboxResponse): string => {
@@ -39,8 +42,9 @@ export class MailboxBrokerServer {
 
   constructor(
     private readonly broker: GmailInboxBroker,
-    private readonly socketPath = MAILBOX_SOCKET_PATH,
-    private readonly socketGroupGid?: number
+    private readonly socketPath: string,
+    private readonly socketGroupGid: number,
+    private readonly proposalWriter?: (refs: readonly string[], context: string) => Promise<unknown>
   ) {}
 
   private async execute(request: MailboxRequest): Promise<unknown> {
@@ -51,6 +55,10 @@ export class MailboxBrokerServer {
         case 'list': return await this.broker.list(request.unread, request.limit);
         case 'read': return await this.broker.read(request.ref);
         case 'mark-read': return await this.broker.markRead(request.refs);
+        case 'propose-trash': {
+          if (!this.proposalWriter) throw new Error('Trash proposal is unavailable');
+          return await this.proposalWriter(request.refs, request.context);
+        }
       }
     } finally {
       this.activeOperations -= 1;
