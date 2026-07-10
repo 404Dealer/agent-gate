@@ -199,13 +199,15 @@ export function buildMailboxTrashPreview(draft: Extract<Draft, { type: 'mailbox-
   const subjectLimit = Math.max(50, perItem - fromLimit - 28);
   const itemLines = snapshot.items.map((item, index) => {
     const date = item.receivedAt ? item.receivedAt.slice(0, 10) : 'unknown date';
-    return `${index + 1}. ${preview(item.from, fromLimit)} — ${preview(item.subject, subjectLimit)} — ${date}`;
+    return `${index + 1}. UID ${item.uid} · ${preview(item.from, fromLimit)} — ${preview(item.subject, subjectLimit)} — ${date}`;
   });
   const text = [
     '🗑️ Mailbox Trash Request',
     '',
-    `Account: ${snapshot.provider}`,
-    `Action: Move ${snapshot.items.length} exact INBOX message(s) to Gmail Trash`,
+    `Account: ${preview(snapshot.account, 320)}`,
+    `Source: ${snapshot.sourcePath} · UIDVALIDITY ${snapshot.uidValidity}`,
+    `Destination: ${preview(snapshot.trashPath.replace(/[\r\n\t]+/g, ' '), 300)}`,
+    `Action: Move ${snapshot.items.length} exact message(s) to Gmail Trash`,
     'Permanent deletion/EXPUNGE: unavailable',
     '',
     ...itemLines,
@@ -411,18 +413,19 @@ export class AgentGateBot {
     }
   }
 
-  private async sendDraftForApproval(draft: Draft, fileName: string): Promise<void> {
+  private async sendDraftForApproval(_draft: Draft, fileName: string): Promise<void> {
     const draftPath = resolve(this.draftsRoot, 'pending', fileName);
     const draftRaw = await readFile(draftPath, 'utf8');
+    const boundDraft = DraftSchema.parse(JSON.parse(draftRaw));
     let token = createApprovalToken(fileName, draftRaw);
-    const providerName = draft.provider || this.config.defaults.provider;
+    const providerName = boundDraft.provider || this.config.defaults.provider;
     let previewResult: ApprovalPreview;
-    if (draft.type === 'mailbox-trash') {
-      const mailboxTrashSnapshot = await this.executor.prepareMailboxTrash(draft);
+    if (boundDraft.type === 'mailbox-trash') {
+      const mailboxTrashSnapshot = await this.executor.prepareMailboxTrash(boundDraft);
       token = { ...token, mailboxTrashSnapshot };
-      previewResult = buildMailboxTrashPreview(draft, mailboxTrashSnapshot);
+      previewResult = buildMailboxTrashPreview(boundDraft, mailboxTrashSnapshot);
     } else {
-      previewResult = buildApprovalPreview(draft, {
+      previewResult = buildApprovalPreview(boundDraft, {
         configuredSender: this.executor.describeProviderSender(providerName),
         providerName,
         bodyPreviewChars: this.config.approval.bodyPreviewChars,

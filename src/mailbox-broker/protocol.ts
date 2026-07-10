@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { decodeInboxReference, decodeUniqueInboxReferences } from './reference.js';
 
 export const MAILBOX_SOCKET_PATH = '/run/agent-gate-mailbox/broker.sock';
 export const MAX_REQUEST_BYTES = 16 * 1024;
@@ -9,7 +10,22 @@ const RequestBase = z.object({
   id: z.string().uuid()
 });
 
-const MessageRefSchema = z.string().min(8).max(256).regex(/^[A-Za-z0-9_-]+$/);
+const MessageRefSchema = z.string().min(8).max(256).regex(/^[A-Za-z0-9_-]+$/).refine((value) => {
+  try {
+    decodeInboxReference(value);
+    return true;
+  } catch {
+    return false;
+  }
+}, 'Invalid canonical message reference');
+
+const UniqueMessageRefsSchema = z.array(MessageRefSchema).min(1).max(20).superRefine((refs, ctx) => {
+  try {
+    decodeUniqueInboxReferences(refs);
+  } catch (error) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: error instanceof Error ? error.message : 'Invalid mailbox references' });
+  }
+});
 
 export const MailboxRequestSchema = z.discriminatedUnion('op', [
   RequestBase.extend({
@@ -23,11 +39,11 @@ export const MailboxRequestSchema = z.discriminatedUnion('op', [
   }).strict(),
   RequestBase.extend({
     op: z.literal('mark-read'),
-    refs: z.array(MessageRefSchema).min(1).max(20)
+    refs: UniqueMessageRefsSchema
   }).strict(),
   RequestBase.extend({
     op: z.literal('propose-trash'),
-    refs: z.array(MessageRefSchema).min(1).max(20),
+    refs: UniqueMessageRefsSchema,
     context: z.string().max(1000)
   }).strict()
 ]);

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { decodeUniqueInboxReferences } from './mailbox-broker/reference.js';
 
 export const DraftStatusSchema = z.enum(['pending', 'approved', 'denied', 'edited', 'sent', 'failed']);
 export const DraftTypeSchema = z.enum(['email', 'webhook', 'mailbox-trash']);
@@ -23,8 +24,14 @@ export const WebhookPayloadSchema = z.object({
 export const MailboxTrashPayloadSchema = z.object({
   refs: z.array(z.string().regex(/^[A-Za-z0-9_-]{8,256}$/)).min(1).max(20)
 }).strict().superRefine((payload, ctx) => {
-  if (new Set(payload.refs).size !== payload.refs.length) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Duplicate mailbox references are not allowed', path: ['refs'] });
+  try {
+    decodeUniqueInboxReferences(payload.refs);
+  } catch (error) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: error instanceof Error ? error.message : 'Invalid mailbox references',
+      path: ['refs']
+    });
   }
 });
 

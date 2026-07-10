@@ -56,11 +56,12 @@ async function main(): Promise<void> {
   const executor = new Executor(config, draftsRoot);
   const bot = new AgentGateBot(config, watcher, executor, draftsRoot);
 
-  await watcher.start();
-  console.log('[agent-gate] watcher started, watching', config.watch.directory);
-
   await bot.start();
   console.log('[agent-gate] bot handlers registered');
+
+  await watcher.replayPending();
+  await watcher.start();
+  console.log('[agent-gate] watcher ready, watching', config.watch.directory);
 
   const mailboxBroker = configuredMailboxBroker(config);
   if (mailboxBroker) {

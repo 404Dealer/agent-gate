@@ -294,6 +294,10 @@ PREVIOUS_MODULES=""
 PREVIOUS_CONFIG=""
 PREVIOUS_LEGACY_CONFIG=""
 PREVIOUS_UNIT=""
+PREVIOUS_MAILBOX_CLI=""
+MAILBOX_CLI_EXISTED=false
+MAILBOX_CLI_TOUCHED=false
+MAILBOX_CLI_TEMP=""
 APP_TREE_SYNCED=false
 RUNTIME_SWAPPED=false
 CONFIG_TOUCHED=false
@@ -310,8 +314,10 @@ cleanup_builder() {
   fi
   [[ -z "$BUILD_HOME" ]] || rm -rf -- "$BUILD_HOME"
   [[ -z "$BUILD_ROOT" ]] || rm -rf -- "$BUILD_ROOT"
+  [[ -z "$MAILBOX_CLI_TEMP" ]] || rm -f -- "$MAILBOX_CLI_TEMP"
   BUILD_HOME=""
   BUILD_ROOT=""
+  MAILBOX_CLI_TEMP=""
 }
 
 if systemctl is-active --quiet "$SERVICE_NAME"; then
@@ -340,6 +346,13 @@ restore_previous_deployment() {
         rm -f -- "$UNIT_PATH"
       fi
       systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+    if [[ "$MAILBOX_CLI_TOUCHED" == true ]]; then
+      if [[ "$MAILBOX_CLI_EXISTED" == true && -n "$PREVIOUS_MAILBOX_CLI" && -f "$PREVIOUS_MAILBOX_CLI" ]]; then
+        install -o root -g root -m 0755 "$PREVIOUS_MAILBOX_CLI" "$MAILBOX_CLI_PATH"
+      else
+        rm -f -- "$MAILBOX_CLI_PATH"
+      fi
     fi
   fi
   cleanup_builder
@@ -391,6 +404,11 @@ fi
 if [[ -f "$UNIT_PATH" ]]; then
   PREVIOUS_UNIT="$ROLLBACK_ROOT/agent-gate.service"
   cp -a "$UNIT_PATH" "$PREVIOUS_UNIT"
+fi
+if [[ -f "$MAILBOX_CLI_PATH" ]]; then
+  MAILBOX_CLI_EXISTED=true
+  PREVIOUS_MAILBOX_CLI="$ROLLBACK_ROOT/agent-gate-mailbox"
+  cp -a "$MAILBOX_CLI_PATH" "$PREVIOUS_MAILBOX_CLI"
 fi
 PREVIOUS_DIST="$ROLLBACK_ROOT/previous-dist"
 PREVIOUS_MODULES="$ROLLBACK_ROOT/previous-node-modules"
@@ -614,7 +632,20 @@ if [[ "$SERVICE_WAS_ACTIVE" == true ]]; then
 fi
 MAILBOX_CLI_TEMP="$MAILBOX_CLI_PATH.new.$$"
 install -o root -g root -m 0755 "$INSTALL_DIR/dist/mailbox-client.js" "$MAILBOX_CLI_TEMP"
+MAILBOX_CLI_TOUCHED=true
 mv -T -- "$MAILBOX_CLI_TEMP" "$MAILBOX_CLI_PATH"
+MAILBOX_CLI_TEMP=""
+if [[ -L "$MAILBOX_CLI_PATH" || ! -f "$MAILBOX_CLI_PATH" || "$(stat -c '%U:%G:%a' "$MAILBOX_CLI_PATH")" != "root:root:755" ]]; then
+  echo "Installed mailbox client failed ownership/mode verification." >&2
+  exit 1
+fi
+if [[ "$SERVICE_WAS_ACTIVE" == true ]]; then
+  MAILBOX_SOCKET_PATH="/run/agent-gate-mailbox/broker.sock"
+  if [[ ! -S "$MAILBOX_SOCKET_PATH" || "$(stat -c '%U:%G:%a' "$MAILBOX_SOCKET_PATH")" != "$SERVICE_USER:$MAILBOX_GROUP:660" ]]; then
+    echo "Mailbox broker socket failed ownership/mode verification." >&2
+    exit 1
+  fi
+fi
 rm -rf -- "$ROLLBACK_ROOT"
 ROLLBACK_ROOT=""
 trap - EXIT

@@ -1,6 +1,6 @@
 import chokidar, { type FSWatcher } from 'chokidar';
 import { EventEmitter } from 'node:events';
-import { lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, resolve } from 'node:path';
 import { DraftSchema, updateStatus, type Draft } from './schema.js';
 
@@ -57,11 +57,49 @@ export class DraftWatcher extends EventEmitter {
     this.watcher.on('error', (error) => {
       this.emit('error', error);
     });
+
+    await new Promise<void>((resolveReady, rejectReady) => {
+      const onReady = (): void => {
+        this.watcher?.off('error', onStartupError);
+        resolveReady();
+      };
+      const onStartupError = (error: unknown): void => {
+        this.watcher?.off('ready', onReady);
+        rejectReady(error);
+      };
+      this.watcher!.once('ready', onReady);
+      this.watcher!.once('error', onStartupError);
+    });
   }
 
   async stop(): Promise<void> {
     await this.watcher?.close();
     this.watcher = null;
+  }
+
+  async replayPending(): Promise<void> {
+    await this.ensureDirectories();
+    const entries = (await readdir(this.pendingDir, { withFileTypes: true }))
+      .filter((entry) => extname(entry.name) === '.json' && !entry.name.startsWith('.'))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const pendingPath = resolve(this.pendingDir, entry.name);
+      try {
+        const metadata = await lstat(pendingPath);
+        if (!entry.isFile() || !metadata.isFile()) throw new Error('Invalid pending draft file type');
+        if (metadata.size > MAX_DRAFT_SIZE_BYTES) throw new Error('Pending draft file is too large');
+        const draft = DraftSchema.parse(JSON.parse(await readFile(pendingPath, 'utf8')));
+        this.emit('draft', { draft, filePath: pendingPath } satisfies DraftEvent);
+      } catch (error) {
+        const failedPath = resolve(this.options.rootDir, 'failed', entry.name);
+        await rename(pendingPath, failedPath).catch(() => {});
+        this.emit('malformed', {
+          filePath: pendingPath,
+          failedPath,
+          error: error instanceof Error ? error.message : 'Invalid pending draft'
+        });
+      }
+    }
   }
 
   async failPending(filePath: string, error: string): Promise<void> {

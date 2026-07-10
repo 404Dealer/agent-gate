@@ -31,7 +31,27 @@ const usage = (): string => [
   'Outputs JSON. Gmail credentials remain inside the isolated agent-gate service.'
 ].join('\n');
 
-const validRef = (value: string): boolean => /^[A-Za-z0-9_-]{8,256}$/.test(value);
+const refIdentity = (value: string): { uidValidity: string; uid: number } | null => {
+  if (!/^[A-Za-z0-9_-]{8,256}$/.test(value)) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as Record<string, unknown>;
+    const keys = Object.keys(parsed).sort().join(',');
+    if (keys !== 'folder,uid,uidValidity,v' || parsed.v !== 1 || parsed.folder !== 'inbox' ||
+        typeof parsed.uidValidity !== 'string' || !/^[1-9][0-9]*$/.test(parsed.uidValidity) ||
+        typeof parsed.uid !== 'number' || !Number.isSafeInteger(parsed.uid) || parsed.uid < 1) return null;
+    const canonical = Buffer.from(JSON.stringify({
+      v: 1,
+      folder: 'inbox',
+      uidValidity: parsed.uidValidity,
+      uid: parsed.uid
+    }), 'utf8').toString('base64url');
+    return canonical === value ? { uidValidity: parsed.uidValidity, uid: parsed.uid } : null;
+  } catch {
+    return null;
+  }
+};
+
+const validRef = (value: string): boolean => refIdentity(value) !== null;
 
 export function parseMailboxClientArgs(argv: string[]): ClientRequest | 'help' {
   if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) return 'help';
@@ -67,7 +87,12 @@ export function parseMailboxClientArgs(argv: string[]): ClientRequest | 'help' {
     if (hasContext && (contextIndex < 2 || contextIndex + 2 !== argv.length)) throw new Error('Invalid mailbox command');
     const refs = argv.slice(1, hasContext ? contextIndex : argv.length);
     const context = hasContext ? argv[contextIndex + 1] : 'User requested these exact INBOX messages be moved to Trash';
-    if (refs.length < 1 || refs.length > 20 || !refs.every(validRef) || new Set(refs).size !== refs.length || context.length > 1000) {
+    const decoded = refs.map(refIdentity);
+    const firstUidValidity = decoded[0]?.uidValidity;
+    const semanticIdentities = decoded.map((ref) => ref ? `${ref.uidValidity}:${ref.uid}` : 'invalid');
+    if (refs.length < 1 || refs.length > 20 || decoded.some((ref) => !ref) || !firstUidValidity ||
+        decoded.some((ref) => ref?.uidValidity !== firstUidValidity) ||
+        new Set(semanticIdentities).size !== refs.length || context.length > 1000) {
       throw new Error('Invalid mailbox command');
     }
     return { v: 1, id, op: 'propose-trash', refs, context };

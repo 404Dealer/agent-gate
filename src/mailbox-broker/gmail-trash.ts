@@ -1,11 +1,21 @@
-import { ImapFlow, type FetchMessageObject } from 'imapflow';
+import { ImapFlow, type CopyResponseObject, type FetchMessageObject } from 'imapflow';
 import { buildGmailImapOptions } from '../mailbox/gmail-imap.js';
 import { selectAuthoritativeMailbox } from '../mailbox/cleanup.js';
 import type { MailboxTrashDraft } from '../schema.js';
 import type { BrokerCredentials } from './gmail-inbox.js';
-import { decodeInboxReference } from './reference.js';
+import { decodeUniqueInboxReferences } from './reference.js';
 
 class SafeTrashError extends Error {}
+
+export class NativeMoveOnlyImapFlow extends ImapFlow {
+  override async messageCopy(..._args: Parameters<ImapFlow['messageCopy']>): Promise<never> {
+    throw new SafeTrashError('Unsafe IMAP MOVE fallback was blocked');
+  }
+
+  override async messageDelete(..._args: Parameters<ImapFlow['messageDelete']>): Promise<never> {
+    throw new SafeTrashError('Unsafe IMAP delete/expunge path was blocked');
+  }
+}
 
 export interface TrashPreviewItem {
   uid: number;
@@ -17,6 +27,7 @@ export interface TrashPreviewItem {
 
 export interface MailboxTrashSnapshot {
   provider: 'gmail-smtp';
+  account: string;
   sourcePath: 'INBOX';
   trashPath: string;
   uidValidity: string;
@@ -27,6 +38,37 @@ export interface MailboxTrashSnapshot {
 export type MailboxTrashResult =
   | { outcome: 'moved'; requestedCount: number; verifiedMovedCount: number; details: string }
   | { outcome: 'move-partial'; requestedCount: number; verifiedMovedCount: number; details: string };
+
+export function classifyMailboxMoveResult(
+  snapshot: MailboxTrashSnapshot,
+  result: CopyResponseObject | false
+): MailboxTrashResult {
+  if (!result || result.path !== snapshot.sourcePath || result.destination !== snapshot.trashPath || !(result.uidMap instanceof Map)) {
+    return {
+      outcome: 'move-partial',
+      requestedCount: snapshot.uids.length,
+      verifiedMovedCount: 0,
+      details: 'Gmail MOVE returned no authoritative UID mapping; do not retry automatically'
+    };
+  }
+  const verifiedMovedCount = snapshot.uids.filter((uid) => {
+    const destinationUid = result.uidMap?.get(uid);
+    return Number.isSafeInteger(destinationUid) && destinationUid! > 0;
+  }).length;
+  return verifiedMovedCount === snapshot.uids.length
+    ? {
+        outcome: 'moved',
+        requestedCount: snapshot.uids.length,
+        verifiedMovedCount,
+        details: `Moved ${verifiedMovedCount} message(s) to Gmail Trash with authoritative UID mapping`
+      }
+    : {
+        outcome: 'move-partial',
+        requestedCount: snapshot.uids.length,
+        verifiedMovedCount,
+        details: 'Gmail MOVE returned a partial UID mapping; do not retry automatically'
+      };
+}
 
 const cleanLine = (value: unknown, max = 300): string =>
   (typeof value === 'string' ? value : '')
@@ -63,7 +105,7 @@ export class GmailMailboxTrashService {
   constructor(private readonly credentials: BrokerCredentials) {}
 
   private async withClient<T>(operation: (client: ImapFlow) => Promise<T>): Promise<T> {
-    const client = new ImapFlow(buildGmailImapOptions(this.credentials));
+    const client = new NativeMoveOnlyImapFlow(buildGmailImapOptions(this.credentials));
     client.on('error', () => {});
     try {
       await client.connect();
@@ -83,15 +125,14 @@ export class GmailMailboxTrashService {
 
   async prepare(draft: MailboxTrashDraft): Promise<MailboxTrashSnapshot> {
     if (draft.provider !== 'gmail-smtp') throw new SafeTrashError('Mailbox Trash requires the gmail-smtp provider');
-    const refs = draft.payload.refs.map((ref) => decodeInboxReference(ref));
-    const uidValidity = refs[0]?.uidValidity;
-    if (!uidValidity || refs.some((ref) => ref.uidValidity !== uidValidity)) {
-      throw new SafeTrashError('Mailbox references must share one current INBOX identity');
-    }
-    const uids = [...new Set(refs.map((ref) => ref.uid))];
+    const refs = decodeUniqueInboxReferences(draft.payload.refs);
+    const uidValidity = refs[0].uidValidity;
+    const uids = refs.map((ref) => ref.uid);
 
     return this.withClient(async (client) => {
-      if (!client.capabilities.has('MOVE')) throw new SafeTrashError('Gmail server does not advertise safe MOVE support');
+      if (!client.capabilities.has('MOVE') || !client.capabilities.has('UIDPLUS')) {
+        throw new SafeTrashError('Gmail server does not advertise safe MOVE and UIDPLUS support');
+      }
       const mailboxes = (await client.list()).map((mailbox) => ({ path: mailbox.path, flags: [...mailbox.flags] }));
       const trash = selectAuthoritativeMailbox(mailboxes, 'trash');
       const lock = await client.getMailboxLock('INBOX', { readOnly: true, acquireTimeout: 10_000 });
@@ -107,6 +148,7 @@ export class GmailMailboxTrashService {
         const byUid = exactFetched(fetched, uids);
         return {
           provider: 'gmail-smtp',
+          account: cleanLine(this.credentials.username, 320),
           sourcePath: 'INBOX',
           trashPath: trash.path,
           uidValidity,
@@ -130,7 +172,9 @@ export class GmailMailboxTrashService {
 
   async execute(snapshot: MailboxTrashSnapshot): Promise<MailboxTrashResult> {
     return this.withClient(async (client) => {
-      if (!client.capabilities.has('MOVE')) throw new SafeTrashError('Gmail server does not advertise safe MOVE support');
+      if (!client.capabilities.has('MOVE') || !client.capabilities.has('UIDPLUS')) {
+        throw new SafeTrashError('Gmail server does not advertise safe MOVE and UIDPLUS support');
+      }
       const mailboxes = (await client.list()).map((mailbox) => ({ path: mailbox.path, flags: [...mailbox.flags] }));
       const trash = selectAuthoritativeMailbox(mailboxes, 'trash');
       if (trash.path !== snapshot.trashPath) throw new SafeTrashError('Gmail Trash identity changed after approval');
@@ -145,47 +189,22 @@ export class GmailMailboxTrashService {
           snapshot.uids
         );
 
-        let moveAccepted = false;
-        try {
-          const result = await client.messageMove(snapshot.uids, snapshot.trashPath, { uid: true });
-          if (!result) throw new SafeTrashError('Gmail did not accept the approved move');
-          moveAccepted = true;
-        } catch (error) {
-          if (error instanceof SafeTrashError) throw error;
-          return {
-            outcome: 'move-partial',
-            requestedCount: snapshot.uids.length,
-            verifiedMovedCount: 0,
-            details: 'Gmail MOVE result was ambiguous; do not retry automatically'
-          };
+        if (!client.capabilities.has('MOVE') || !client.capabilities.has('UIDPLUS')) {
+          throw new SafeTrashError('Gmail safe MOVE capabilities changed before execution');
         }
 
-        if (!moveAccepted) throw new SafeTrashError('Gmail did not accept the approved move');
+        let result: Awaited<ReturnType<ImapFlow['messageMove']>>;
         try {
-          const remaining = await client.fetchAll(snapshot.uids, { uid: true }, { uid: true });
-          const remainingSet = new Set(remaining.map((message) => message.uid));
-          const verifiedMovedCount = snapshot.uids.filter((uid) => !remainingSet.has(uid)).length;
-          return verifiedMovedCount === snapshot.uids.length
-            ? {
-                outcome: 'moved',
-                requestedCount: snapshot.uids.length,
-                verifiedMovedCount,
-                details: `Moved ${verifiedMovedCount} message(s) to Gmail Trash`
-              }
-            : {
-                outcome: 'move-partial',
-                requestedCount: snapshot.uids.length,
-                verifiedMovedCount,
-                details: 'Gmail MOVE was only partially verified; do not retry automatically'
-              };
+          result = await client.messageMove(snapshot.uids, snapshot.trashPath, { uid: true });
         } catch {
           return {
             outcome: 'move-partial',
             requestedCount: snapshot.uids.length,
             verifiedMovedCount: 0,
-            details: 'Gmail accepted MOVE but verification failed; do not retry automatically'
+            details: 'Gmail MOVE outcome could not be confirmed; do not retry automatically'
           };
         }
+        return classifyMailboxMoveResult(snapshot, result);
       } finally {
         lock.release();
       }

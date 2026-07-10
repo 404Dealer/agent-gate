@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { rename, unlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { DraftSchema } from '../schema.js';
-import { decodeInboxReference } from './reference.js';
+import { decodeUniqueInboxReferences } from './reference.js';
 
 export interface TrashProposalResult {
   proposalId: string;
@@ -14,12 +14,7 @@ export async function submitTrashProposal(
   refs: readonly string[],
   context: string
 ): Promise<TrashProposalResult> {
-  const decoded = refs.map((ref) => decodeInboxReference(ref));
-  const uidValidity = decoded[0]?.uidValidity;
-  if (!uidValidity || decoded.some((ref) => ref.uidValidity !== uidValidity)) {
-    throw new Error('Mailbox references must share one current INBOX identity');
-  }
-  if (new Set(refs).size !== refs.length) throw new Error('Duplicate mailbox references are not allowed');
+  decodeUniqueInboxReferences(refs);
 
   const proposalId = randomUUID();
   const now = new Date().toISOString();
