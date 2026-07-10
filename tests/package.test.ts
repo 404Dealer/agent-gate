@@ -32,7 +32,12 @@ test('published npm executables run from an installed tarball', { timeout: 180_0
     ], installDir);
     assert.equal(install.status, 0, install.stderr || install.stdout);
 
-    for (const binary of ['agent-gate', 'agent-gate-oauth', 'agent-gate-smtp-setup']) {
+    for (const binary of [
+      'agent-gate',
+      'agent-gate-oauth',
+      'agent-gate-smtp-setup',
+      'agent-gate-mailbox-cleanup'
+    ]) {
       const result = run(join(installDir, 'node_modules', '.bin', binary), ['--help'], installDir);
       assert.equal(result.status, 0, `${binary}: ${result.error?.message ?? result.stderr ?? result.stdout}`);
       assert.match(result.stdout, /Usage:/, `${binary} returned no usage text`);
