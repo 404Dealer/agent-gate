@@ -86,6 +86,18 @@ test('production installer validates canonical safe arguments without side effec
   }
 });
 
+test('production installer retains rollback state until upgraded service is healthy', async () => {
+  const installer = await readFile(new URL('../scripts/install-production.sh', import.meta.url), 'utf8');
+  assert.match(installer, /restore_previous_deployment/);
+  assert.match(installer, /ROLLBACK_ROOT/);
+  assert.match(installer, /PREVIOUS_CONFIG/);
+  assert.match(installer, /PREVIOUS_UNIT/);
+  const healthCheck = installer.indexOf('if ! systemctl is-active --quiet "$SERVICE_NAME"');
+  const discardRollback = installer.lastIndexOf('rm -rf -- "$ROLLBACK_ROOT"');
+  assert(healthCheck >= 0, 'installer must health-check the upgraded service');
+  assert(discardRollback > healthCheck, 'rollback state must survive until after the health check');
+});
+
 test('interactive selection is explicit, bounded, and terminal-safe', () => {
   assert.equal(parseSelection('2', 3), 1);
   assert.throws(() => parseSelection('0', 3), /between 1 and 3/);
@@ -479,7 +491,9 @@ test('Zoho exchanges an authorization code at the selected data center', async (
     return new Response(JSON.stringify({
       access_token: 'access-token',
       refresh_token: 'refresh-token',
-      scope: 'ZohoMail.messages.CREATE ZohoMail.accounts.READ'
+      api_domain: 'https://www.zohoapis.eu',
+      token_type: 'Bearer',
+      expires_in: 3600
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' }
@@ -501,7 +515,7 @@ test('Zoho exchanges an authorization code at the selected data center', async (
   assert.equal(body.get('grant_type'), 'authorization_code');
   assert.equal(body.get('code'), 'authorization-code');
   assert.equal(body.get('code_verifier'), 'pkce-verifier');
-  assert.equal(body.get('scope'), 'ZohoMail.messages.CREATE,ZohoMail.accounts.READ');
+  assert.equal(body.get('scope'), null);
   assert(calls[0].init?.signal instanceof AbortSignal);
 });
 

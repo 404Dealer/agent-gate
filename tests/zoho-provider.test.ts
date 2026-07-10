@@ -112,6 +112,77 @@ test('zoho provider refreshes and retries once after a cached-token 401', async 
   }
 });
 
+test('zoho provider does not invalidate a newer token on a delayed concurrent 401', async () => {
+  const originalFetch = globalThis.fetch;
+  let tokenCalls = 0;
+  let tokenASends = 0;
+  let releaseFirst401!: () => void;
+  let releaseSecond401!: () => void;
+  let observeTokenB!: () => void;
+  const first401Gate = new Promise<void>((resolve) => { releaseFirst401 = resolve; });
+  const second401Gate = new Promise<void>((resolve) => { releaseSecond401 = resolve; });
+  const tokenBObserved = new Promise<void>((resolve) => { observeTokenB = resolve; });
+
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    if (String(url).includes('/oauth/v2/token')) {
+      tokenCalls += 1;
+      if (tokenCalls > 2) return new Response('', { status: 429 });
+      return new Response(JSON.stringify({ access_token: tokenCalls === 1 ? 'token-a' : 'token-b', expires_in: 3600 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    const authorization = (init?.headers as Record<string, string>).Authorization;
+    if (authorization === 'Zoho-oauthtoken token-b') {
+      observeTokenB();
+      return new Response(JSON.stringify({ data: { messageId: 'token-b-message' } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    assert.equal(authorization, 'Zoho-oauthtoken token-a');
+    tokenASends += 1;
+    if (tokenASends === 1) {
+      return new Response(JSON.stringify({ data: { messageId: 'primed' } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    if (tokenASends === 2) {
+      await first401Gate;
+      return new Response('', { status: 401 });
+    }
+    await second401Gate;
+    return new Response('', { status: 401 });
+  }) as typeof fetch;
+
+  try {
+    const provider = new ZohoEmailProvider({
+      type: 'email-zoho',
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      refreshToken: 'refresh-token',
+      region: 'eu',
+      accountId: '123456789',
+      fromAddress: 'owner@example.eu'
+    });
+    await provider.send(sampleDraft());
+    const first = provider.send(sampleDraft());
+    const second = provider.send(sampleDraft());
+    await new Promise((resolve) => setImmediate(resolve));
+    releaseFirst401();
+    await tokenBObserved;
+    releaseSecond401();
+    await Promise.all([first, second]);
+    assert.equal(tokenCalls, 2);
+  } finally {
+    releaseFirst401?.();
+    releaseSecond401?.();
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('zoho provider redacts malformed token responses', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () => new Response('super-secret-refresh-token{', {

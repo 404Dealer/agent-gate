@@ -116,9 +116,26 @@ function interpolateEnv(value: unknown): unknown {
   return value;
 }
 
+function validateOutlookRefreshTokenBindings(value: unknown): void {
+  if (!value || typeof value !== 'object') return;
+  const providers = (value as Record<string, unknown>).providers;
+  if (!providers || typeof providers !== 'object' || Array.isArray(providers)) return;
+
+  for (const provider of Object.values(providers as Record<string, unknown>)) {
+    if (!provider || typeof provider !== 'object' || Array.isArray(provider)) continue;
+    const entry = provider as Record<string, unknown>;
+    if (entry.type !== 'email-outlook' || typeof entry.refreshTokenKey !== 'string') continue;
+    const expected = `\${PASS:${entry.refreshTokenKey}}`;
+    if (entry.refreshToken !== expected) {
+      throw new Error('Outlook refreshTokenKey requires refreshToken to use the exact matching ${PASS:key} reference');
+    }
+  }
+}
+
 export async function loadConfig(configPath?: string): Promise<AgentGateConfig> {
   const path = resolve(configPath ?? process.env.AGENT_GATE_CONFIG ?? 'config.yaml');
   const raw = await readFile(path, 'utf8');
   const parsed = YAML.parse(raw);
+  validateOutlookRefreshTokenBindings(parsed);
   return ConfigSchema.parse(interpolateEnv(parsed));
 }

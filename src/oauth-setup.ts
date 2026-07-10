@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { randomBytes } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { lstat } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { parseOAuthSetupArgs, type OAuthSetupOptions } from './oauth/cli-options.js';
@@ -261,7 +262,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   await setupZoho(options, store);
 }
 
-const invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : '';
+const invokedPath = process.argv[1] ? pathToFileURL(realpathSync(process.argv[1])).href : '';
 if (import.meta.url === invokedPath) {
   main().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : 'Unknown OAuth setup failure';

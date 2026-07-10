@@ -170,6 +170,8 @@ This uses authorization code + PKCE, state validation, and the exact `localhost`
 
 The provider persists Microsoft refresh-token replacements back to the isolated password store so token rotation survives service restarts.
 
+For durable rotation, `refreshTokenKey` is accepted only when `refreshToken` is the exact matching `${PASS:key}` reference. Legacy environment-variable or literal-token configs may omit `refreshTokenKey`; sends remain compatible and replacements are reused in memory, but the operator should rerun the OAuth helper to migrate to durable rotation before relying on restart continuity.
+
 ### Device-code fallback
 
 Device authorization is convenient for truly headless environments but current Microsoft guidance treats it as higher risk, and Conditional Access may block it. Use it only when the SSH-forwarded PKCE callback is unavailable:

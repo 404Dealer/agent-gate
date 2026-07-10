@@ -85,10 +85,9 @@ export class OutlookEmailProvider implements Provider {
 
     const rotatedRefreshToken = token.refresh_token;
     if (typeof rotatedRefreshToken === 'string' && rotatedRefreshToken && rotatedRefreshToken !== this.currentRefreshToken) {
-      if (!this.providerConfig.refreshTokenKey) {
-        throw new Error('Outlook refreshTokenKey is required to persist a rotated refresh token');
+      if (this.providerConfig.refreshTokenKey) {
+        await this.secretStore.set(this.providerConfig.refreshTokenKey, rotatedRefreshToken);
       }
-      await this.secretStore.set(this.providerConfig.refreshTokenKey, rotatedRefreshToken);
       this.currentRefreshToken = rotatedRefreshToken;
     }
 
@@ -151,25 +150,32 @@ export class OutlookEmailProvider implements Provider {
       throw new Error('email-outlook provider only supports email drafts');
     }
 
-    const accessToken = await this.getAccessToken();
+    let accessToken = await this.getAccessToken();
     const endpoint = this.providerConfig.userId
       ? `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(this.providerConfig.userId)}/sendMail`
       : 'https://graph.microsoft.com/v1.0/me/sendMail';
 
-    const response = await fetch(endpoint, {
+    const requestBody = JSON.stringify({
+      message: this.buildGraphMessage(draft),
+      saveToSentItems: true
+    });
+    const sendWithToken = (token: string): Promise<Response> => fetch(endpoint, {
       method: 'POST',
       redirect: 'error',
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        message: this.buildGraphMessage(draft),
-        saveToSentItems: true
-      }),
+      body: requestBody,
       signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS)
     });
 
+    let response = await sendWithToken(accessToken);
+    if (response.status === 401) {
+      if (this.cachedAccessToken?.value === accessToken) this.cachedAccessToken = undefined;
+      accessToken = await this.getAccessToken();
+      response = await sendWithToken(accessToken);
+    }
     if (!response.ok) {
       throw new Error(statusMessage('Outlook send failed', response.status));
     }

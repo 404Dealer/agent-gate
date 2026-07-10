@@ -294,7 +294,7 @@ Sends email via [Microsoft Graph sendMail](https://learn.microsoft.com/en-us/gra
 | `clientId` | Microsoft Entra app/client ID |
 | `clientSecret` | Optional confidential-client secret; omitted for recommended public-client PKCE/device flows |
 | `refreshToken` | OAuth refresh token with `offline_access Mail.Send` |
-| `refreshTokenKey` | Optional password-store key used to persist Microsoft token rotation |
+| `refreshTokenKey` | Password-store key used to persist Microsoft token rotation; when set, `refreshToken` must be the exact matching `${PASS:key}` reference. Legacy env/literal configs may omit it and rotate only in memory until restart. |
 | `tenantId` | Tenant ID, or `common` for personal/multi-tenant auth |
 | `userId` | Optional mailbox/user id; omitted uses `/me/sendMail` |
 | `fromAddress` | Enforced sender address shown in approval preview |

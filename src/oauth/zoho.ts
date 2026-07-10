@@ -148,8 +148,7 @@ export async function exchangeZohoAuthorizationCode(
       client_secret: options.clientSecret,
       redirect_uri: options.redirectUri,
       code: options.code,
-      code_verifier: options.codeVerifier,
-      scope: ZOHO_SCOPE_VALUE
+      code_verifier: options.codeVerifier
     }),
     signal: AbortSignal.timeout(OAUTH_FETCH_TIMEOUT_MS)
   });
@@ -169,7 +168,7 @@ export async function exchangeZohoAuthorizationCode(
   if (typeof body.refresh_token !== 'string' || !body.refresh_token) {
     throw new Error('Zoho OAuth token exchange did not return a refresh_token; revoke prior consent and retry');
   }
-  assertZohoScopes(body.scope);
+  if (body.scope !== undefined) assertZohoScopes(body.scope);
   return { accessToken: body.access_token, refreshToken: body.refresh_token };
 }
 

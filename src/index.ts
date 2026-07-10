@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { dirname, resolve } from 'node:path';
 import { loadConfig } from './config.js';
 import { DraftWatcher } from './watcher.js';
@@ -52,7 +53,11 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
 }
 
-main().catch((error) => {
-  console.error('[agent-gate] fatal:', error);
-  process.exit(1);
-});
+if (process.argv.slice(2).includes('--help')) {
+  console.log('Usage: agent-gate\n\nStarts the agent-gate approval service using AGENT_GATE_CONFIG or ./config.yaml.');
+} else {
+  main().catch((error) => {
+    console.error('[agent-gate] fatal:', error);
+    process.exit(1);
+  });
+}

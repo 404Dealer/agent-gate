@@ -156,6 +156,16 @@ CONFIG_DIR="$INSTALL_DIR/config"
 BUILD_USER="agentgate-build-$$"
 BUILD_HOME=""
 BUILD_ROOT=""
+ROLLBACK_ROOT=""
+PREVIOUS_DIST=""
+PREVIOUS_MODULES=""
+PREVIOUS_CONFIG=""
+PREVIOUS_LEGACY_CONFIG=""
+PREVIOUS_UNIT=""
+RUNTIME_SWAPPED=false
+CONFIG_TOUCHED=false
+UNIT_WRITTEN=false
+UNIT_PATH="/etc/systemd/system/$SERVICE_NAME"
 
 cleanup_builder() {
   if id -- "$BUILD_USER" >/dev/null 2>&1; then
@@ -174,16 +184,38 @@ if systemctl is-active --quiet "$SERVICE_NAME"; then
   systemctl stop "$SERVICE_NAME"
 fi
 
-restore_service_on_failure() {
+restore_previous_deployment() {
   local status=$?
   trap - EXIT
+  if [[ $status -ne 0 ]]; then
+    systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+    if [[ "$RUNTIME_SWAPPED" == true ]]; then
+      rm -rf -- "$INSTALL_DIR/dist" "$INSTALL_DIR/node_modules"
+      [[ -z "$PREVIOUS_DIST" || ! -e "$PREVIOUS_DIST" ]] || mv "$PREVIOUS_DIST" "$INSTALL_DIR/dist"
+      [[ -z "$PREVIOUS_MODULES" || ! -e "$PREVIOUS_MODULES" ]] || mv "$PREVIOUS_MODULES" "$INSTALL_DIR/node_modules"
+    fi
+    if [[ "$CONFIG_TOUCHED" == true ]]; then
+      rm -f -- "$CONFIG_DIR/config.yaml" "$INSTALL_DIR/config.yaml"
+      [[ -z "$PREVIOUS_CONFIG" || ! -e "$PREVIOUS_CONFIG" ]] || cp -a "$PREVIOUS_CONFIG" "$CONFIG_DIR/config.yaml"
+      [[ -z "$PREVIOUS_LEGACY_CONFIG" || ! -e "$PREVIOUS_LEGACY_CONFIG" ]] || cp -a "$PREVIOUS_LEGACY_CONFIG" "$INSTALL_DIR/config.yaml"
+    fi
+    if [[ "$UNIT_WRITTEN" == true ]]; then
+      if [[ -n "$PREVIOUS_UNIT" && -e "$PREVIOUS_UNIT" ]]; then
+        cp -a "$PREVIOUS_UNIT" "$UNIT_PATH"
+      else
+        rm -f -- "$UNIT_PATH"
+      fi
+      systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+  fi
   cleanup_builder
+  [[ -z "$ROLLBACK_ROOT" ]] || rm -rf -- "$ROLLBACK_ROOT"
   if [[ $status -ne 0 && "$SERVICE_WAS_ACTIVE" == true ]]; then
     systemctl start "$SERVICE_NAME" >/dev/null 2>&1 || true
   fi
   exit "$status"
 }
-trap restore_service_on_failure EXIT
+trap restore_previous_deployment EXIT
 
 if [[ -L "$INSTALL_DIR" ]]; then
   echo "Refusing symbolic link at protected install path: $INSTALL_DIR" >&2
@@ -211,6 +243,23 @@ for protected_path in "${protected_paths[@]}"; do
     exit 1
   fi
 done
+
+ROLLBACK_ROOT="$(mktemp -d "$INSTALL_DIR/.rollback-XXXXXXXX")"
+chmod 700 "$ROLLBACK_ROOT"
+if [[ -f "$CONFIG_DIR/config.yaml" ]]; then
+  PREVIOUS_CONFIG="$ROLLBACK_ROOT/config.yaml"
+  cp -a "$CONFIG_DIR/config.yaml" "$PREVIOUS_CONFIG"
+fi
+if [[ -f "$INSTALL_DIR/config.yaml" ]]; then
+  PREVIOUS_LEGACY_CONFIG="$ROLLBACK_ROOT/legacy-config.yaml"
+  cp -a "$INSTALL_DIR/config.yaml" "$PREVIOUS_LEGACY_CONFIG"
+fi
+if [[ -f "$UNIT_PATH" ]]; then
+  PREVIOUS_UNIT="$ROLLBACK_ROOT/agent-gate.service"
+  cp -a "$UNIT_PATH" "$PREVIOUS_UNIT"
+fi
+PREVIOUS_DIST="$ROLLBACK_ROOT/previous-dist"
+PREVIOUS_MODULES="$ROLLBACK_ROOT/previous-node-modules"
 
 mkdir -p "$CONFIG_DIR" "$INSTALL_DIR"/drafts/{inbox,pending,approved,sent,denied,failed}
 rsync -a --delete --chown=root:root \
@@ -285,18 +334,11 @@ fi
 chown -hR root:"$SERVICE_GROUP" "$BUILD_ROOT/dist" "$BUILD_ROOT/node_modules"
 chmod -R u=rwX,g=rX,o= "$BUILD_ROOT/dist" "$BUILD_ROOT/node_modules"
 
-OLD_DIST="$BUILD_ROOT/previous-dist"
-OLD_MODULES="$BUILD_ROOT/previous-node-modules"
-[[ ! -e "$INSTALL_DIR/dist" ]] || mv "$INSTALL_DIR/dist" "$OLD_DIST"
-[[ ! -e "$INSTALL_DIR/node_modules" ]] || mv "$INSTALL_DIR/node_modules" "$OLD_MODULES"
-if ! mv "$BUILD_ROOT/node_modules" "$INSTALL_DIR/node_modules" || ! mv "$BUILD_ROOT/dist" "$INSTALL_DIR/dist"; then
-  rm -rf "$INSTALL_DIR/node_modules" "$INSTALL_DIR/dist"
-  [[ ! -e "$OLD_MODULES" ]] || mv "$OLD_MODULES" "$INSTALL_DIR/node_modules"
-  [[ ! -e "$OLD_DIST" ]] || mv "$OLD_DIST" "$INSTALL_DIR/dist"
-  echo "Runtime swap failed; restored the previous dist and node_modules." >&2
-  exit 1
-fi
-rm -rf "$OLD_MODULES" "$OLD_DIST"
+RUNTIME_SWAPPED=true
+[[ ! -e "$INSTALL_DIR/dist" ]] || mv "$INSTALL_DIR/dist" "$PREVIOUS_DIST"
+[[ ! -e "$INSTALL_DIR/node_modules" ]] || mv "$INSTALL_DIR/node_modules" "$PREVIOUS_MODULES"
+mv "$BUILD_ROOT/node_modules" "$INSTALL_DIR/node_modules"
+mv "$BUILD_ROOT/dist" "$INSTALL_DIR/dist"
 cleanup_builder
 
 chown -hR root:root "$INSTALL_DIR/src"
@@ -305,6 +347,7 @@ chmod -R u=rwX,go= "$INSTALL_DIR/src"
 # Migrate the legacy single-file location once. The dedicated directory is the
 # only app-tree location writable by agentgate, which preserves atomic renames
 # without making the root-owned scripts replaceable.
+CONFIG_TOUCHED=true
 mkdir -p "$CONFIG_DIR"
 if [[ -f "$INSTALL_DIR/config.yaml" ]]; then
   if [[ -e "$CONFIG_DIR/config.yaml" ]]; then
@@ -364,7 +407,8 @@ if command -v setfacl >/dev/null 2>&1; then
   setfacl -m "u:$AGENT_USER:r" "$INSTALL_DIR/audit.log" || true
 fi
 
-cat > /etc/systemd/system/$SERVICE_NAME <<EOF
+UNIT_WRITTEN=true
+cat > "$UNIT_PATH" <<EOF
 [Unit]
 Description=agent-gate — Deterministic Approval Layer
 After=network-online.target
@@ -409,7 +453,13 @@ systemctl daemon-reload
 systemctl enable "$SERVICE_NAME" >/dev/null
 if [[ "$SERVICE_WAS_ACTIVE" == true ]]; then
   systemctl start "$SERVICE_NAME"
+  if ! systemctl is-active --quiet "$SERVICE_NAME"; then
+    echo "Upgraded service failed its active-state health check; restoring the previous deployment." >&2
+    exit 1
+  fi
 fi
+rm -rf -- "$ROLLBACK_ROOT"
+ROLLBACK_ROOT=""
 trap - EXIT
 
 cat <<DONE

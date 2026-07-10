@@ -43,7 +43,6 @@ providers:
     type: email-outlook
     clientId: client-id
     refreshToken: refresh-token
-    refreshTokenKey: agent-gate/microsoft-refresh-token
     tenantId: common
     fromAddress: sender@outlook.com
     displayName: Johnny Silverhand
@@ -59,11 +58,14 @@ audit:
     assert.equal(config.providers.outlook.type, 'email-outlook');
     assert.equal(config.providers.outlook.fromAddress, 'sender@outlook.com');
     assert.equal(config.providers.outlook.clientSecret, undefined);
-    assert.equal(config.providers.outlook.refreshTokenKey, 'agent-gate/microsoft-refresh-token');
+    assert.equal(config.providers.outlook.refreshTokenKey, undefined);
 
     const source = await readFile(configPath, 'utf8');
-    await writeFile(configPath, source.replace('agent-gate/microsoft-refresh-token', '../invalid-key'), 'utf8');
-    await assert.rejects(() => loadConfig(configPath));
+    await writeFile(configPath, source.replace(
+      'refreshToken: refresh-token',
+      'refreshToken: refresh-token\n    refreshTokenKey: agent-gate/microsoft-refresh-token'
+    ), 'utf8');
+    await assert.rejects(() => loadConfig(configPath), /exact matching.*PASS/i);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -182,14 +184,18 @@ test('outlook provider persists and reuses rotated refresh tokens', async () => 
   }
 });
 
-test('outlook provider fails closed when a rotated token has no persistence key', async () => {
+test('outlook provider preserves legacy in-memory rotation when no persistence key is configured', async () => {
   const originalFetch = globalThis.fetch;
+  const tokenBodies: URLSearchParams[] = [];
+  let refreshCount = 0;
   let graphCalls = 0;
-  globalThis.fetch = (async (url: string | URL | Request) => {
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
     if (String(url).includes('/oauth2/v2.0/token')) {
+      tokenBodies.push(init?.body as URLSearchParams);
+      refreshCount += 1;
       return new Response(JSON.stringify({
-        access_token: 'access-token',
-        refresh_token: 'rotated-refresh-token'
+        access_token: `access-${refreshCount}`,
+        refresh_token: `rotated-refresh-${refreshCount}`
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
     graphCalls += 1;
@@ -205,8 +211,11 @@ test('outlook provider fails closed when a rotated token has no persistence key'
       fromAddress: 'sender@outlook.com'
     });
 
-    await assert.rejects(() => provider.send(sampleDraft()), /refreshTokenKey.*persist/i);
-    assert.equal(graphCalls, 0);
+    await provider.send(sampleDraft());
+    await provider.send(sampleDraft());
+    assert.equal(graphCalls, 2);
+    assert.equal(tokenBodies[0].get('refresh_token'), 'initial-refresh-token');
+    assert.equal(tokenBodies[1].get('refresh_token'), 'rotated-refresh-1');
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -259,6 +268,44 @@ test('outlook provider serializes concurrent refresh-token rotation', async () =
     }]);
   } finally {
     releaseTokenResponse?.();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('outlook provider refreshes and retries once after a cached-token 401', async () => {
+  const originalFetch = globalThis.fetch;
+  let tokenCalls = 0;
+  let graphCalls = 0;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    if (String(url).includes('/oauth2/v2.0/token')) {
+      tokenCalls += 1;
+      return new Response(JSON.stringify({ access_token: `access-${tokenCalls}`, expires_in: 3600 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    graphCalls += 1;
+    const authorization = (init?.headers as Record<string, string>).Authorization;
+    if (graphCalls === 1) {
+      assert.equal(authorization, 'Bearer access-1');
+      return new Response('', { status: 401 });
+    }
+    assert.equal(authorization, 'Bearer access-2');
+    return new Response('', { status: 202 });
+  }) as typeof fetch;
+
+  try {
+    const provider = new OutlookEmailProvider({
+      type: 'email-outlook',
+      clientId: 'client-id',
+      refreshToken: 'refresh-token',
+      tenantId: 'common',
+      fromAddress: 'sender@outlook.com'
+    });
+    await provider.send(sampleDraft());
+    assert.equal(tokenCalls, 2);
+    assert.equal(graphCalls, 2);
+  } finally {
     globalThis.fetch = originalFetch;
   }
 });

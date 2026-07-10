@@ -127,7 +127,7 @@ export class ZohoEmailProvider implements Provider {
 
     let response = await sendWithToken(accessToken);
     if (response.status === 401) {
-      this.cachedAccessToken = undefined;
+      if (this.cachedAccessToken?.value === accessToken) this.cachedAccessToken = undefined;
       accessToken = await this.getAccessToken();
       response = await sendWithToken(accessToken);
     }

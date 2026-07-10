@@ -31,7 +31,9 @@ providers:
     # Omit clientSecret for recommended public-client PKCE/device flows.
     # clientSecret: "${MICROSOFT_CLIENT_SECRET}"
     refreshToken: "${MICROSOFT_REFRESH_TOKEN}"
-    # When refreshToken is ${PASS:agent-gate/microsoft-refresh-token}, also set:
+    # Recommended for durable Microsoft token rotation. This key is accepted only
+    # when refreshToken is the exact matching ${PASS:agent-gate/microsoft-refresh-token} reference.
+    # Legacy env-based configs may omit it and rotate only in memory until restart.
     # refreshTokenKey: "agent-gate/microsoft-refresh-token"
     tenantId: "common"
     fromAddress: "you@outlook.com"

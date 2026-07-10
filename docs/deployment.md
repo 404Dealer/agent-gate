@@ -51,7 +51,7 @@ sudo scripts/install-production.sh \
   --telegram-user-id YOUR_TELEGRAM_USER_ID
 ```
 
-The installer stops an already-active service during upgrades, installs lockfile dependencies with root lifecycle scripts disabled, compiles in a staged tree as a one-use unprivileged build account, verifies the output, and then atomically replaces the runtime. The persistent `agentgate` service account never owns source or privileged helpers.
+The installer stops an already-active service during upgrades, installs lockfile dependencies with root lifecycle scripts disabled, compiles in a staged tree as a one-use unprivileged build account, and swaps in the verified output. It retains the previous runtime, config, and systemd unit until the upgraded service passes an active-state health check; any later failure restores those snapshots. The persistent `agentgate` service account never owns source or privileged helpers.
 
 The only application-tree paths writable by `agentgate` are the dedicated config directory, draft state, and audit log. OAuth setup needs the config directory—not the application root—to be writable so it can atomically replace `config.yaml`.
 
