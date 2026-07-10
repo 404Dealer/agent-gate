@@ -42,7 +42,6 @@ providers:
   gmail:
     type: email-gmail
     clientId: client-id
-    clientSecret: client-secret
     refreshToken: refresh-token
     fromAddress: sender@gmail.com
     displayName: Johnny Silverhand
@@ -80,7 +79,6 @@ test('gmail provider refreshes OAuth token and sends a base64url RFC 5322 messag
     const provider = new GmailEmailProvider({
       type: 'email-gmail',
       clientId: 'client-id',
-      clientSecret: 'client-secret',
       refreshToken: 'refresh-token',
       fromAddress: 'sender@gmail.com',
       displayName: 'Johnny Silverhand'
@@ -92,10 +90,16 @@ test('gmail provider refreshes OAuth token and sends a base64url RFC 5322 messag
     assert.equal(result.providerMessageId, 'gmail-message-id');
     assert.equal(calls.length, 2);
     assert.equal(calls[0].url, 'https://oauth2.googleapis.com/token');
+    assert.equal(calls[0].init?.redirect, 'error');
     assert(calls[0].init?.signal instanceof AbortSignal);
     assert.equal(calls[1].url, 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send');
+    assert.equal(calls[1].init?.redirect, 'error');
     assert(calls[1].init?.signal instanceof AbortSignal);
     assert.equal((calls[1].init?.headers as Record<string, string>).Authorization, 'Bearer access-token');
+
+    const tokenBody = calls[0].init?.body as URLSearchParams;
+    assert.equal(tokenBody.get('client_secret'), null);
+    assert.equal(tokenBody.get('grant_type'), 'refresh_token');
 
     const sendBody = JSON.parse(String(calls[1].init?.body)) as { raw: string };
     const decoded = Buffer.from(sendBody.raw.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
@@ -112,6 +116,31 @@ test('gmail provider refreshes OAuth token and sends a base64url RFC 5322 messag
   }
 });
 
+test('gmail provider redacts malformed token responses', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response('super-secret-refresh-token{', {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  })) as typeof fetch;
+
+  try {
+    const provider = new GmailEmailProvider({
+      type: 'email-gmail',
+      clientId: 'client-id',
+      refreshToken: 'refresh-token',
+      fromAddress: 'sender@gmail.com'
+    });
+    await assert.rejects(() => provider.send(sampleDraft()), (error: unknown) => {
+      assert(error instanceof Error);
+      assert.match(error.message, /invalid JSON/);
+      assert.doesNotMatch(error.message, /super-secret/);
+      return true;
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('gmail provider rejects token responses without an access token', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () =>
@@ -121,7 +150,6 @@ test('gmail provider rejects token responses without an access token', async () 
     const provider = new GmailEmailProvider({
       type: 'email-gmail',
       clientId: 'client-id',
-      clientSecret: 'client-secret',
       refreshToken: 'refresh-token',
       fromAddress: 'sender@gmail.com'
     });

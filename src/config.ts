@@ -28,7 +28,7 @@ const ProviderSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('email-gmail'),
     clientId: z.string().min(1),
-    clientSecret: z.string().min(1),
+    clientSecret: z.string().min(1).optional(),
     refreshToken: z.string().min(1),
     fromAddress: z.string().email(),
     displayName: z.string().optional()
@@ -38,6 +38,7 @@ const ProviderSchema = z.discriminatedUnion('type', [
     clientId: z.string().min(1),
     clientSecret: z.string().min(1),
     refreshToken: z.string().min(1),
+    region: z.enum(['us', 'eu', 'in', 'au', 'jp', 'ca', 'sa']).default('us'),
     accountId: z.string().min(1),
     fromAddress: z.string().email(),
     displayName: z.string().optional()
@@ -45,8 +46,9 @@ const ProviderSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('email-outlook'),
     clientId: z.string().min(1),
-    clientSecret: z.string().min(1),
+    clientSecret: z.string().min(1).optional(),
     refreshToken: z.string().min(1),
+    refreshTokenKey: z.string().regex(/^agent-gate\/[a-z0-9][a-z0-9-]*$/).optional(),
     tenantId: z.string().min(1).default('common'),
     userId: z.string().min(1).optional(),
     fromAddress: z.string().email(),
@@ -114,9 +116,26 @@ function interpolateEnv(value: unknown): unknown {
   return value;
 }
 
+function validateOutlookRefreshTokenBindings(value: unknown): void {
+  if (!value || typeof value !== 'object') return;
+  const providers = (value as Record<string, unknown>).providers;
+  if (!providers || typeof providers !== 'object' || Array.isArray(providers)) return;
+
+  for (const provider of Object.values(providers as Record<string, unknown>)) {
+    if (!provider || typeof provider !== 'object' || Array.isArray(provider)) continue;
+    const entry = provider as Record<string, unknown>;
+    if (typeof entry.refreshTokenKey !== 'string') continue;
+    const expected = `\${PASS:${entry.refreshTokenKey}}`;
+    if (entry.refreshToken !== expected) {
+      throw new Error('Outlook refreshTokenKey requires refreshToken to use the exact matching ${PASS:key} reference');
+    }
+  }
+}
+
 export async function loadConfig(configPath?: string): Promise<AgentGateConfig> {
   const path = resolve(configPath ?? process.env.AGENT_GATE_CONFIG ?? 'config.yaml');
   const raw = await readFile(path, 'utf8');
   const parsed = YAML.parse(raw);
+  validateOutlookRefreshTokenBindings(parsed);
   return ConfigSchema.parse(interpolateEnv(parsed));
 }

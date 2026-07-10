@@ -1,15 +1,18 @@
 import type { ProviderConfig } from '../config.js';
+import type { SecretStore } from '../oauth/persist.js';
+import { PassSecretStore } from '../oauth/secret-store.js';
 import type { Draft } from '../schema.js';
 import type { Provider, ProviderResult } from './index.js';
 
 interface OutlookTokenResponse {
   access_token?: string;
+  refresh_token?: string;
+  expires_in?: number | string;
 }
 
 const PROVIDER_FETCH_TIMEOUT_MS = 30_000;
 
-const statusMessage = (prefix: string, status: number, statusText: string): string =>
-  `${prefix}: ${status} ${statusText || 'Unknown error'}`;
+const statusMessage = (prefix: string, status: number): string => `${prefix}: HTTP ${status}`;
 
 const normalizeRecipients = (value: string | string[] | undefined): string[] => {
   if (!value) return [];
@@ -30,39 +33,87 @@ const graphRecipients = (value: string | string[] | undefined): Array<{ emailAdd
   normalizeRecipients(value).map((address) => ({ emailAddress: { address: escapeHeaderValue(address) } }));
 
 export class OutlookEmailProvider implements Provider {
-  constructor(private readonly providerConfig: Extract<ProviderConfig, { type: 'email-outlook' }>) {}
+  private currentRefreshToken: string;
+  private cachedAccessToken?: { value: string; expiresAt: number };
+  private pendingAccessToken?: Promise<string>;
+
+  constructor(
+    private readonly providerConfig: Extract<ProviderConfig, { type: 'email-outlook' }>,
+    private readonly secretStore: SecretStore = new PassSecretStore()
+  ) {
+    this.currentRefreshToken = providerConfig.refreshToken;
+  }
 
   describeSender(): string {
     return formatMailbox(this.providerConfig.fromAddress, this.providerConfig.displayName);
   }
 
-  private async getAccessToken(): Promise<string> {
+  private async refreshAccessToken(): Promise<string> {
     const tenantId = encodeURIComponent(this.providerConfig.tenantId ?? 'common');
     const body = new URLSearchParams({
-      refresh_token: this.providerConfig.refreshToken,
+      refresh_token: this.currentRefreshToken,
       client_id: this.providerConfig.clientId,
-      client_secret: this.providerConfig.clientSecret,
       grant_type: 'refresh_token',
       scope: 'offline_access Mail.Send'
     });
+    if (this.providerConfig.clientSecret) {
+      body.set('client_secret', this.providerConfig.clientSecret);
+    }
 
     const response = await fetch(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`, {
       method: 'POST',
+      redirect: 'error',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body,
       signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS)
     });
 
     if (!response.ok) {
-      throw new Error(statusMessage('Outlook token refresh failed', response.status, response.statusText));
+      throw new Error(statusMessage('Outlook token refresh failed', response.status));
     }
 
-    const token = (await response.json()) as OutlookTokenResponse;
+    let token: OutlookTokenResponse;
+    try {
+      token = await response.json() as OutlookTokenResponse;
+    } catch {
+      throw new Error('Outlook token refresh returned invalid JSON');
+    }
     const accessToken = token.access_token;
     if (typeof accessToken !== 'string' || accessToken.length === 0) {
       throw new Error('Outlook token refresh succeeded but no access_token was returned');
     }
+
+    const rotatedRefreshToken = token.refresh_token;
+    if (typeof rotatedRefreshToken === 'string' && rotatedRefreshToken && rotatedRefreshToken !== this.currentRefreshToken) {
+      if (this.providerConfig.refreshTokenKey) {
+        await this.secretStore.set(this.providerConfig.refreshTokenKey, rotatedRefreshToken);
+      }
+      this.currentRefreshToken = rotatedRefreshToken;
+    }
+
+    const expiresInSeconds = Number(token.expires_in);
+    if (Number.isFinite(expiresInSeconds) && expiresInSeconds > 60) {
+      this.cachedAccessToken = {
+        value: accessToken,
+        expiresAt: Date.now() + expiresInSeconds * 1_000
+      };
+    }
     return accessToken;
+  }
+
+  private async getAccessToken(): Promise<string> {
+    if (this.cachedAccessToken && Date.now() + 60_000 < this.cachedAccessToken.expiresAt) {
+      return this.cachedAccessToken.value;
+    }
+    if (this.pendingAccessToken) return this.pendingAccessToken;
+
+    const pending = this.refreshAccessToken();
+    this.pendingAccessToken = pending;
+    try {
+      return await pending;
+    } finally {
+      if (this.pendingAccessToken === pending) this.pendingAccessToken = undefined;
+    }
   }
 
   private buildGraphMessage(draft: Draft): Record<string, unknown> {
@@ -99,26 +150,34 @@ export class OutlookEmailProvider implements Provider {
       throw new Error('email-outlook provider only supports email drafts');
     }
 
-    const accessToken = await this.getAccessToken();
+    let accessToken = await this.getAccessToken();
     const endpoint = this.providerConfig.userId
       ? `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(this.providerConfig.userId)}/sendMail`
       : 'https://graph.microsoft.com/v1.0/me/sendMail';
 
-    const response = await fetch(endpoint, {
+    const requestBody = JSON.stringify({
+      message: this.buildGraphMessage(draft),
+      saveToSentItems: true
+    });
+    const sendWithToken = (token: string): Promise<Response> => fetch(endpoint, {
       method: 'POST',
+      redirect: 'error',
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        message: this.buildGraphMessage(draft),
-        saveToSentItems: true
-      }),
+      body: requestBody,
       signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS)
     });
 
+    let response = await sendWithToken(accessToken);
+    if (response.status === 401) {
+      if (this.cachedAccessToken?.value === accessToken) this.cachedAccessToken = undefined;
+      accessToken = await this.getAccessToken();
+      response = await sendWithToken(accessToken);
+    }
     if (!response.ok) {
-      throw new Error(statusMessage('Outlook send failed', response.status, response.statusText));
+      throw new Error(statusMessage('Outlook send failed', response.status));
     }
 
     return {

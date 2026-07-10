@@ -20,7 +20,7 @@ providers:
   gmail:
     type: "email-gmail"
     clientId: "${GOOGLE_CLIENT_ID}"
-    clientSecret: "${GOOGLE_CLIENT_SECRET}"
+    # Desktop/public-client onboarding does not use a clientSecret.
     refreshToken: "${GOOGLE_REFRESH_TOKEN}"
     fromAddress: "you@gmail.com"
     displayName: "Your Name"
@@ -28,8 +28,13 @@ providers:
   outlook:
     type: "email-outlook"
     clientId: "${MICROSOFT_CLIENT_ID}"
-    clientSecret: "${MICROSOFT_CLIENT_SECRET}"
+    # Omit clientSecret for recommended public-client PKCE/device flows.
+    # clientSecret: "${MICROSOFT_CLIENT_SECRET}"
     refreshToken: "${MICROSOFT_REFRESH_TOKEN}"
+    # Recommended for durable Microsoft token rotation. This key is accepted only
+    # when refreshToken is the exact matching ${PASS:agent-gate/microsoft-refresh-token} reference.
+    # Legacy env-based configs may omit it and rotate only in memory until restart.
+    # refreshTokenKey: "agent-gate/microsoft-refresh-token"
     tenantId: "common"
     fromAddress: "you@outlook.com"
     displayName: "Your Name"
@@ -39,6 +44,7 @@ providers:
     clientId: "${ZOHO_CLIENT_ID}"
     clientSecret: "${ZOHO_CLIENT_SECRET}"
     refreshToken: "${ZOHO_REFRESH_TOKEN}"
+    region: "us" # us|eu|in|au|jp|ca|sa
     accountId: "${ZOHO_ACCOUNT_ID}"
     fromAddress: "you@yourdomain.com"
 

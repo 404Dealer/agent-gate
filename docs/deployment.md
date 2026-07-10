@@ -41,66 +41,46 @@ sudo usermod -aG agentgate-inbox your-user  # Replace with your agent's user
 
 > ⚠️ Do **not** add your agent's user to the `agentgate` group — that would leak read access to agent-gate's files.
 
-## Phase 2 — Directory Structure
+## Phase 2 — Install and Verify the Filesystem Boundary
+
+Run the reviewed installer from the repository checkout:
 
 ```bash
-sudo mkdir -p /opt/agent-gate/{src,dist,drafts/{inbox,pending,approved,sent,denied,failed}}
-
-# Copy source and build
-sudo cp -r /path/to/agent-gate/src/* /opt/agent-gate/src/
-sudo cp /path/to/agent-gate/package.json /opt/agent-gate/
-sudo cp /path/to/agent-gate/package-lock.json /opt/agent-gate/
-sudo cp /path/to/agent-gate/tsconfig.json /opt/agent-gate/
-sudo chown -R agentgate:agentgate /opt/agent-gate
-
-sudo -u agentgate bash -c 'cd /opt/agent-gate && npm ci'
-sudo -u agentgate bash -c 'cd /opt/agent-gate && npm run build'
+sudo scripts/install-production.sh \
+  --agent-user your-user \
+  --telegram-user-id YOUR_TELEGRAM_USER_ID
 ```
 
-### Set Permissions
+The installer stops an already-active service during upgrades, installs lockfile dependencies with root lifecycle scripts disabled, compiles in a staged tree as a one-use unprivileged build account, and swaps in the verified output. It retains the previous runtime, config, and systemd unit until the upgraded service passes an active-state health check; any later failure restores those snapshots. The persistent `agentgate` service account never owns source or privileged helpers.
 
-```bash
-# Main directory — traverse only (no listing)
-sudo chmod 711 /opt/agent-gate
-sudo chmod 711 /opt/agent-gate/drafts
-
-# Source + build + deps — agentgate only
-sudo chmod 700 /opt/agent-gate/src
-sudo chmod 700 /opt/agent-gate/dist
-sudo chmod -R go-rwx /opt/agent-gate/node_modules
-
-# INBOX — true dropbox: write + traverse, no read, sticky bit
-sudo chown agentgate:agentgate-inbox /opt/agent-gate/drafts/inbox
-sudo chmod 1730 /opt/agent-gate/drafts/inbox
-
-# Internal draft directories — agentgate only
-for dir in pending approved sent denied failed; do
-  sudo chown agentgate:agentgate /opt/agent-gate/drafts/$dir
-  sudo chmod 700 /opt/agent-gate/drafts/$dir
-done
-
-# Audit log — agentgate writes, your user can read
-sudo touch /opt/agent-gate/audit.log
-sudo chown agentgate:agentgate /opt/agent-gate/audit.log
-sudo chmod 640 /opt/agent-gate/audit.log
-# Optional: grant read access to your user via ACL
-sudo setfacl -m u:your-user:r /opt/agent-gate/audit.log
-```
+The only application-tree paths writable by `agentgate` are the dedicated config directory, draft state, and audit log. OAuth setup needs the config directory—not the application root—to be writable so it can atomically replace `config.yaml`.
 
 ### Permission Summary
 
-| Path | Owner | Mode | Agent's user can |
-|------|-------|------|-----------------|
-| `/opt/agent-gate/` | agentgate | 711 | Traverse only |
-| `/opt/agent-gate/config.yaml` | agentgate | 600 | Nothing |
-| `/opt/agent-gate/src/` | agentgate | 700 | Nothing |
-| `/opt/agent-gate/dist/` | agentgate | 700 | Nothing |
-| `/opt/agent-gate/drafts/` | agentgate | 711 | Traverse only |
-| `/opt/agent-gate/drafts/inbox/` | agentgate:agentgate-inbox | 1730 | **Write only** (dropbox) |
-| `/opt/agent-gate/drafts/pending/` | agentgate | 700 | Nothing |
-| `/opt/agent-gate/drafts/approved/` | agentgate | 700 | Nothing |
-| `/opt/agent-gate/drafts/sent/` | agentgate | 700 | Nothing |
-| `/opt/agent-gate/audit.log` | agentgate | 640+ACL | Read only |
+| Path | Owner | Mode | Purpose / agent access |
+|------|-------|------|------------------------|
+| `/opt/agent-gate/` | `root:root` | `711` | Traverse only; prevents replacement of root-owned helpers |
+| `/opt/agent-gate/scripts/` | `root:root` | `755` | Root-invoked helpers, immutable to `agentgate` and Hermes |
+| `/opt/agent-gate/src/` | `root:root` | `700` | Build source, no service/Hermes access |
+| `/opt/agent-gate/dist/` | `root:agentgate` | `750` dirs / `640` files | Service-readable runtime, not service-writable |
+| `/opt/agent-gate/node_modules/` | `root:agentgate` | group read/execute | Service-readable dependencies, not service-writable |
+| `/opt/agent-gate/config/` | `agentgate:agentgate` | `700` | Private atomic config updates |
+| `/opt/agent-gate/config/config.yaml` | `agentgate:agentgate` | `600` | Private configuration; Hermes has no access |
+| `/opt/agent-gate/drafts/` | `root:root` | `711` | Traverse only |
+| `/opt/agent-gate/drafts/inbox/` | `agentgate:agentgate-inbox` | `1730` | Hermes **write only** dropbox |
+| `/opt/agent-gate/drafts/{pending,approved,sent,denied,failed}/` | `agentgate:agentgate` | `700` | Private state |
+| `/opt/agent-gate/audit.log` | `agentgate:agentgate` | `640` + optional ACL | Hermes/operator read only when explicitly granted |
+
+Verify the critical parent and helper ownership after installation:
+
+```bash
+sudo stat -c '%U:%G %a %n' \
+  /opt/agent-gate \
+  /opt/agent-gate/scripts \
+  /opt/agent-gate/scripts/oauth-setup.sh \
+  /opt/agent-gate/config \
+  /opt/agent-gate/config/config.yaml
+```
 
 ## Phase 3 — Credentials
 
@@ -124,31 +104,46 @@ Expire-Date: 0
 EOF
 '
 
-# Initialize pass store
-AGENTGATE_GPG_FPR=$(sudo -u agentgate gpg --list-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')
-sudo -u agentgate bash -c "pass init $AGENTGATE_GPG_FPR"
+# Initialize the empty pass store without invoking pass init.
+# The fingerprint is public metadata; no secret is printed.
+AGENTGATE_GPG_FPR=$(sudo -u agentgate env \
+  HOME=/home/agentgate \
+  GNUPGHOME=/home/agentgate/.gnupg \
+  gpg --list-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')
+test -n "$AGENTGATE_GPG_FPR"
+sudo install -d -m 0700 -o agentgate -g agentgate /home/agentgate/.password-store
+printf '%s\n' "$AGENTGATE_GPG_FPR" | sudo tee /home/agentgate/.password-store/.gpg-id >/dev/null
+sudo chown agentgate:agentgate /home/agentgate/.password-store/.gpg-id
+sudo chmod 0600 /home/agentgate/.password-store/.gpg-id
 ```
 
-Then run the human-only secret handoff helper from your own terminal:
+Store the separate approval-bot token first. The OAuth wrapper restarts the service after successful onboarding, so this bootstrap credential must already exist:
 
 ```bash
-# Do not run this through a Hermes conversation if Hermes must not see send creds.
-sudo scripts/configure-provider-secrets.sh telegram
-sudo scripts/configure-provider-secrets.sh gmail
-# or
-sudo scripts/configure-provider-secrets.sh outlook
-# or
-sudo scripts/configure-provider-secrets.sh zoho
+sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
 ```
 
-The helper prompts for credentials and stores them under the `agentgate` user's `pass` store. Reference them in config with `${PASS:...}` syntax.
-
-See [credential-handoff.md](credential-handoff.md) for the operator responsibilities, Gmail/Zoho token pattern, and the future Outlook/Microsoft Graph pattern.
-
-## Phase 4 — Production Config
+Then authorize one email provider from your own terminal:
 
 ```bash
-sudo -u agentgate tee /opt/agent-gate/config.yaml > /dev/null << 'EOF'
+# Do not run these through a Hermes conversation if Hermes must not see send credentials.
+sudo /opt/agent-gate/scripts/oauth-setup.sh gmail
+# or
+sudo /opt/agent-gate/scripts/oauth-setup.sh outlook
+# or
+sudo /opt/agent-gate/scripts/oauth-setup.sh zoho
+```
+
+The OAuth helper runs as `agentgate` with a clean environment, stores refresh credentials directly in its `pass` store, verifies the authenticated sender/account, atomically writes only versioned `${PASS:...}` references to private config, and restarts the service. Gmail, Outlook, and Zoho use a loopback SSH tunnel by default; Outlook offers an explicit higher-risk `--device-code` fallback. See [oauth-onboarding.md](oauth-onboarding.md).
+
+See [credential-handoff.md](credential-handoff.md) for operator responsibilities and the hard boundary.
+
+## Phase 4 — Production Config (Manual Install Reference Only)
+
+> **If you used `scripts/install-production.sh`, skip this phase.** The installer created the private config and the OAuth helper updated it. Never replace `config.yaml` with this example after OAuth; doing so would discard the verified sender metadata and versioned pass references.
+
+```bash
+sudo -u agentgate tee /opt/agent-gate/config/config.yaml > /dev/null << 'EOF'
 telegram:
   botToken: "${PASS:agent-gate/telegram-bot-token}"
   allowedUsers: [YOUR_TELEGRAM_USER_ID]
@@ -161,7 +156,7 @@ providers:
   gmail:
     type: "email-gmail"
     clientId: "${PASS:agent-gate/google-client-id}"
-    clientSecret: "${PASS:agent-gate/google-client-secret}"
+    # No clientSecret for Desktop/public-client onboarding.
     refreshToken: "${PASS:agent-gate/google-refresh-token}"
     fromAddress: "you@gmail.com"
     displayName: "Your Name"
@@ -169,9 +164,10 @@ providers:
   outlook:
     type: "email-outlook"
     clientId: "${PASS:agent-gate/microsoft-client-id}"
-    clientSecret: "${PASS:agent-gate/microsoft-client-secret}"
+    # No clientSecret for recommended public-client PKCE/device flows.
     refreshToken: "${PASS:agent-gate/microsoft-refresh-token}"
-    tenantId: "${PASS:agent-gate/microsoft-tenant-id}"
+    refreshTokenKey: "agent-gate/microsoft-refresh-token"
+    tenantId: "common"
     fromAddress: "you@outlook.com"
     displayName: "Your Name"
 
@@ -180,14 +176,15 @@ providers:
     clientId: "${PASS:agent-gate/zoho-client-id}"
     clientSecret: "${PASS:agent-gate/zoho-client-secret}"
     refreshToken: "${PASS:agent-gate/zoho-refresh-token}"
-    accountId: "${PASS:agent-gate/zoho-account-id}"
+    region: "us"
+    accountId: "YOUR_DISCOVERED_ACCOUNT_ID"
     fromAddress: "you@yourdomain.com"
 
   log:
     type: "log-only"
 
 defaults:
-  provider: "gmail"
+  provider: "log"
   timezone: "America/Chicago"
   autoDeleteAfterDays: 30
 
@@ -203,10 +200,12 @@ audit:
   logFile: "/opt/agent-gate/audit.log"
 EOF
 
-sudo chmod 600 /opt/agent-gate/config.yaml
+sudo chmod 600 /opt/agent-gate/config/config.yaml
 ```
 
-## Phase 5 — systemd Service
+## Phase 5 — systemd Service (Manual Install Reference Only)
+
+> **If you used the production installer, do not replace its hardened unit.** The installer already wrote the unit and the OAuth wrapper started/restarted it after onboarding. Use the commands below only for a fully manual installation.
 
 ```bash
 sudo tee /etc/systemd/system/agent-gate.service > /dev/null << 'EOF'
@@ -221,7 +220,7 @@ User=agentgate
 Group=agentgate
 WorkingDirectory=/opt/agent-gate
 ExecStart=/usr/bin/node /opt/agent-gate/dist/index.js
-Environment=AGENT_GATE_CONFIG=/opt/agent-gate/config.yaml
+Environment=AGENT_GATE_CONFIG=/opt/agent-gate/config/config.yaml
 Environment=PASSWORD_STORE_DIR=/home/agentgate/.password-store
 Environment=GNUPGHOME=/home/agentgate/.gnupg
 

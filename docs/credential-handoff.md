@@ -48,17 +48,33 @@ sudo scripts/install-production.sh \
 
 This creates users, groups, directories, permissions, a systemd service, and a config skeleton. It is okay for Hermes to assist with this because no send credentials need to be entered into Hermes.
 
-### Phase B — Human-only secret handoff
+### Phase B — Human-only credential handoff
 
-The operator stores secrets through a local terminal, SSH session, or console that is **not being driven by Hermes**:
+Store the separate approval-bot token first, because the OAuth helper restarts the service after a successful config commit:
 
 ```bash
-sudo scripts/configure-provider-secrets.sh gmail
-# or
-sudo scripts/configure-provider-secrets.sh zoho
+sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
 ```
 
-This script prompts for secrets and stores them in the `agentgate` user's `pass` store. Do **not** paste these values into a Hermes chat, Telegram DM with Hermes, issue comment, PR comment, or terminal command that Hermes is executing.
+Then authorize an email provider from a local terminal, SSH session, or console that is **not being driven by Hermes**:
+
+```bash
+sudo /opt/agent-gate/scripts/oauth-setup.sh gmail
+# or
+sudo /opt/agent-gate/scripts/oauth-setup.sh outlook
+# or
+sudo /opt/agent-gate/scripts/oauth-setup.sh zoho
+```
+
+The helper runs OAuth as `agentgate`, stores the resulting refresh token directly in that user's encrypted `pass` store, writes only versioned `${PASS:...}` references into the private config, and restarts the service. See [oauth-onboarding.md](oauth-onboarding.md).
+
+For manual email recovery when OAuth onboarding cannot be used, the operator can run the installed fallback helper, for example:
+
+```bash
+sudo /opt/agent-gate/scripts/configure-provider-secrets.sh gmail
+```
+
+Do **not** paste these values into a Hermes chat, Telegram DM with Hermes, issue comment, PR comment, or terminal command that Hermes is executing.
 
 ## Recommended Credential Model
 
@@ -70,8 +86,8 @@ Hermes installs infrastructure -> human/OAuth flow gives secrets directly to age
 
 Hermes may install packages, create users/groups, write non-secret config, and verify service health. Provider send credentials should enter through either:
 
-1. a human-run local/SSH helper such as `scripts/configure-provider-secrets.sh`; or
-2. a future OAuth browser/device flow that terminates as the `agentgate` service user and writes directly to the `agentgate` secret store.
+1. the shipped PKCE browser flow in `scripts/oauth-setup.sh`, which terminates as `agentgate` and writes directly to its encrypted store (with Outlook device code available only as an explicit fallback); or
+2. the human-run manual fallback `scripts/configure-provider-secrets.sh`.
 
 Do **not** treat this as equivalent:
 
@@ -105,19 +121,22 @@ For v1, prefer local/SSH credential handoff or OAuth device/browser flow that te
 
 Supported provider type: `email-gmail`.
 
-Required send scope:
+Required Gmail data scope plus basic sender identity scopes:
 
 ```text
+openid
+email
 https://www.googleapis.com/auth/gmail.send
 ```
 
-Recommended storage keys:
+Recommended storage keys for the Desktop/public-client flow:
 
 ```text
 agent-gate/google-client-id
-agent-gate/google-client-secret
 agent-gate/google-refresh-token
 ```
+
+No Google client secret is used by secure Desktop onboarding.
 
 Hermes may have separate read-only Gmail access if desired, but it should not have the `gmail.send` refresh token if agent-gate is the send boundary.
 
@@ -131,8 +150,9 @@ Recommended storage keys:
 agent-gate/zoho-client-id
 agent-gate/zoho-client-secret
 agent-gate/zoho-refresh-token
-agent-gate/zoho-account-id
 ```
+
+The discovered Zoho `accountId`, selected region, and sender address are safe metadata in private config, not password-store secrets.
 
 As with Gmail, Hermes should not receive the Zoho send refresh token or any app password/API token that can send mail directly.
 
@@ -140,21 +160,22 @@ As with Gmail, Hermes should not receive the Zoho send refresh token or any app 
 
 Supported provider type: `email-outlook`.
 
-Required delegated scopes:
+Required delegated scopes for onboarding and send:
 
 ```text
 offline_access
 Mail.Send
+User.Read  # used during onboarding to discover the authenticated mailbox
 ```
 
-Recommended storage keys:
+Recommended storage keys for the public-client PKCE flow (and device-code fallback):
 
 ```text
 agent-gate/microsoft-client-id
-agent-gate/microsoft-client-secret
 agent-gate/microsoft-refresh-token
-agent-gate/microsoft-tenant-id
 ```
+
+No Microsoft client secret is used. Secure onboarding sets `refreshTokenKey: agent-gate/microsoft-refresh-token` so replacement refresh tokens are persisted back to the encrypted store.
 
 For Outlook, the same rule applies: the refresh token that can send mail belongs only to `agentgate`, not Hermes. The provider exchanges that refresh token for a short-lived Graph access token and calls `sendMail` only after human approval.
 
@@ -165,11 +186,11 @@ The safest workflow is:
 1. Hermes clones the repo and runs tests/build.
 2. Hermes runs the production installer with sudo approval.
 3. Hermes writes non-secret config values and docs.
-4. Hermes stops and tells the operator exactly which manual command to run.
-5. The operator runs `scripts/configure-provider-secrets.sh` from their own terminal/SSH session.
-6. The script stores secrets under the `agentgate` user.
-7. The operator starts/restarts `agent-gate`.
-8. Hermes verifies service health and writes a harmless test draft to the inbox.
+4. Hermes stops before any provider authorization.
+5. The operator runs `scripts/oauth-setup.sh` from their own terminal/SSH session.
+6. OAuth tokens travel directly from the provider to an `agentgate` process and its encrypted store.
+7. The wrapper restarts `agent-gate` after successful persistence.
+8. Hermes verifies only service health and writes a harmless test draft to the inbox.
 
 Hermes can verify that secrets are **referenced**, without seeing their values:
 
@@ -194,7 +215,7 @@ After setup, these should be true:
 ```text
 Hermes user can write to /opt/agent-gate/drafts/inbox
 Hermes user cannot list/read /opt/agent-gate/drafts/inbox
-Hermes user cannot read /opt/agent-gate/config.yaml
+Hermes user cannot read /opt/agent-gate/config/config.yaml
 Hermes user cannot read /home/agentgate/.password-store
 Hermes user cannot read the agent-gate Telegram bot token
 Hermes has no Gmail/Zoho/Outlook send credentials
