@@ -1,8 +1,8 @@
 import { z } from 'zod';
-import { decodeUniqueInboxReferences } from './mailbox-broker/reference.js';
+import { decodeInboxReference, decodeUniqueInboxReferences } from './mailbox-broker/reference.js';
 
 export const DraftStatusSchema = z.enum(['pending', 'approved', 'denied', 'edited', 'sent', 'failed']);
-export const DraftTypeSchema = z.enum(['email', 'webhook', 'mailbox-trash']);
+export const DraftTypeSchema = z.enum(['email', 'webhook', 'mailbox-trash', 'mailbox-unsubscribe']);
 
 export const EmailPayloadSchema = z.object({
   from: z.string().email(),
@@ -31,6 +31,20 @@ export const MailboxTrashPayloadSchema = z.object({
       code: z.ZodIssueCode.custom,
       message: error instanceof Error ? error.message : 'Invalid mailbox references',
       path: ['refs']
+    });
+  }
+});
+
+export const MailboxUnsubscribePayloadSchema = z.object({
+  ref: z.string().regex(/^[A-Za-z0-9_-]{8,256}$/)
+}).strict().superRefine((payload, ctx) => {
+  try {
+    decodeInboxReference(payload.ref);
+  } catch (error) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: error instanceof Error ? error.message : 'Invalid mailbox reference',
+      path: ['ref']
     });
   }
 });
@@ -80,12 +94,24 @@ const MailboxTrashDraftSchema = z.object({
   payload: MailboxTrashPayloadSchema
 });
 
-export const DraftSchema = z.discriminatedUnion('type', [EmailDraftSchema, WebhookDraftSchema, MailboxTrashDraftSchema]);
+const MailboxUnsubscribeDraftSchema = z.object({
+  ...CommonDraftFields,
+  type: z.literal('mailbox-unsubscribe'),
+  payload: MailboxUnsubscribePayloadSchema
+});
+
+export const DraftSchema = z.discriminatedUnion('type', [
+  EmailDraftSchema,
+  WebhookDraftSchema,
+  MailboxTrashDraftSchema,
+  MailboxUnsubscribeDraftSchema
+]);
 
 export type DraftStatus = z.infer<typeof DraftStatusSchema>;
 export type DraftType = z.infer<typeof DraftTypeSchema>;
 export type Draft = z.infer<typeof DraftSchema>;
 export type MailboxTrashDraft = Extract<Draft, { type: 'mailbox-trash' }>;
+export type MailboxUnsubscribeDraft = Extract<Draft, { type: 'mailbox-unsubscribe' }>;
 
 export function updateStatus(draft: Draft, status: DraftStatus, patch?: Partial<Draft>): Draft {
   return DraftSchema.parse({

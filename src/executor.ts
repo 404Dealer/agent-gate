@@ -7,7 +7,18 @@ import {
   type MailboxTrashResult,
   type MailboxTrashSnapshot
 } from './mailbox-broker/gmail-trash.js';
-import { DraftSchema, updateStatus, type Draft, type MailboxTrashDraft } from './schema.js';
+import {
+  GmailUnsubscribeService,
+  type MailboxUnsubscribeResult,
+  type MailboxUnsubscribeSnapshot
+} from './mailbox-broker/gmail-unsubscribe.js';
+import {
+  DraftSchema,
+  updateStatus,
+  type Draft,
+  type MailboxTrashDraft,
+  type MailboxUnsubscribeDraft
+} from './schema.js';
 import { createProvider, type Provider, type ProviderResult } from './providers/index.js';
 
 const sanitizeError = (error: unknown): string => {
@@ -32,6 +43,11 @@ export type ExecutionResult =
       outcome: 'moved' | 'move-partial';
       requestedCount: number;
       verifiedMovedCount: number;
+    })
+  | (ExecutionResultBase & {
+      outcome: 'unsubscribe-accepted' | 'unsubscribe-rejected' | 'unsubscribe-ambiguous';
+      method: 'https' | 'mailto';
+      destination: string;
     });
 
 export interface MailboxTrashExecutor {
@@ -39,24 +55,36 @@ export interface MailboxTrashExecutor {
   execute(snapshot: MailboxTrashSnapshot): Promise<MailboxTrashResult>;
 }
 
+export interface MailboxUnsubscribeExecutor {
+  prepare(draft: MailboxUnsubscribeDraft): Promise<MailboxUnsubscribeSnapshot>;
+  executeHttps(snapshot: Extract<MailboxUnsubscribeSnapshot, { method: 'rfc8058-https-post' }>): Promise<MailboxUnsubscribeResult>;
+}
+
 export class Executor {
   private readonly providers: Record<string, Provider>;
   private readonly mailboxTrash: MailboxTrashExecutor | null;
+  private readonly mailboxUnsubscribe: MailboxUnsubscribeExecutor | null;
 
   constructor(
     private readonly config: AgentGateConfig,
     private readonly draftsRoot: string,
     providerOverrides?: Record<string, Provider>,
-    mailboxTrashOverride?: MailboxTrashExecutor | null
+    mailboxTrashOverride?: MailboxTrashExecutor | null,
+    mailboxUnsubscribeOverride?: MailboxUnsubscribeExecutor | null
   ) {
     this.providers = providerOverrides ?? Object.fromEntries(
       Object.entries(config.providers).map(([name, providerConfig]) => [name, createProvider(providerConfig)])
     );
+    const credentials = credentialsFromConfig(config);
     if (mailboxTrashOverride !== undefined) {
       this.mailboxTrash = mailboxTrashOverride;
     } else {
-      const credentials = credentialsFromConfig(config);
       this.mailboxTrash = credentials ? new GmailMailboxTrashService(credentials) : null;
+    }
+    if (mailboxUnsubscribeOverride !== undefined) {
+      this.mailboxUnsubscribe = mailboxUnsubscribeOverride;
+    } else {
+      this.mailboxUnsubscribe = credentials ? new GmailUnsubscribeService(credentials) : null;
     }
   }
 
@@ -71,7 +99,16 @@ export class Executor {
     return this.mailboxTrash.prepare(draft);
   }
 
-  async executeApprovedDraft(filePath: string, mailboxSnapshot?: MailboxTrashSnapshot): Promise<ExecutionResult> {
+  async prepareMailboxUnsubscribe(draft: MailboxUnsubscribeDraft): Promise<MailboxUnsubscribeSnapshot> {
+    if (!this.mailboxUnsubscribe) throw new Error('Mailbox unsubscribe is not configured');
+    return this.mailboxUnsubscribe.prepare(draft);
+  }
+
+  async executeApprovedDraft(
+    filePath: string,
+    mailboxTrashSnapshot?: MailboxTrashSnapshot,
+    mailboxUnsubscribeSnapshot?: MailboxUnsubscribeSnapshot
+  ): Promise<ExecutionResult> {
     const raw = await readFile(filePath, 'utf8');
     const draft = DraftSchema.parse(JSON.parse(raw));
     let executionResult: ExecutionResult;
@@ -79,8 +116,50 @@ export class Executor {
 
     try {
       if (draft.type === 'mailbox-trash') {
-        if (!this.mailboxTrash || !mailboxSnapshot) throw new Error('Approved mailbox snapshot is unavailable');
-        executionResult = await this.mailboxTrash.execute(mailboxSnapshot);
+        if (!this.mailboxTrash || !mailboxTrashSnapshot) {
+          throw new Error('Approved mailbox snapshot is unavailable');
+        }
+        executionResult = await this.mailboxTrash.execute(mailboxTrashSnapshot);
+      } else if (draft.type === 'mailbox-unsubscribe') {
+        if (!this.mailboxUnsubscribe || !mailboxUnsubscribeSnapshot) {
+          throw new Error('Approved unsubscribe snapshot is unavailable');
+        }
+        if (mailboxUnsubscribeSnapshot.method === 'rfc8058-https-post') {
+          executionResult = await this.mailboxUnsubscribe.executeHttps(mailboxUnsubscribeSnapshot);
+        } else {
+          const provider = this.providers[draft.provider];
+          if (!provider) throw new Error(`Provider not configured: ${draft.provider}`);
+          const syntheticEmail = DraftSchema.parse({
+            ...draft,
+            type: 'email',
+            payload: {
+              from: mailboxUnsubscribeSnapshot.account,
+              to: mailboxUnsubscribeSnapshot.recipient,
+              subject: mailboxUnsubscribeSnapshot.subject,
+              body: mailboxUnsubscribeSnapshot.body,
+              cc: [],
+              bcc: [],
+              replyTo: ''
+            }
+          });
+          try {
+            const result = await provider.send(syntheticEmail);
+            providerMessageId = result.providerMessageId;
+            executionResult = {
+              outcome: 'unsubscribe-accepted',
+              method: 'mailto',
+              destination: mailboxUnsubscribeSnapshot.recipient,
+              details: 'The standards-based unsubscribe email was accepted by SMTP'
+            };
+          } catch {
+            executionResult = {
+              outcome: 'unsubscribe-ambiguous',
+              method: 'mailto',
+              destination: mailboxUnsubscribeSnapshot.recipient,
+              details: 'The unsubscribe email outcome could not be confirmed; do not retry automatically'
+            };
+          }
+        }
       } else {
         const providerName = draft.provider || this.config.defaults.provider;
         const provider = this.providers[providerName];
@@ -173,7 +252,11 @@ export class Executor {
               requestedCount: result.requestedCount,
               verifiedMovedCount: result.verifiedMovedCount
             }
-          : {})
+          : result?.outcome === 'unsubscribe-accepted' ||
+              result?.outcome === 'unsubscribe-rejected' ||
+              result?.outcome === 'unsubscribe-ambiguous'
+            ? { method: result.method }
+            : {})
     });
     await appendFile(this.config.audit.logFile, `${line}\n`, 'utf8');
   }

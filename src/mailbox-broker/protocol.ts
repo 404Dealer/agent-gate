@@ -45,6 +45,11 @@ export const MailboxRequestSchema = z.discriminatedUnion('op', [
     op: z.literal('propose-trash'),
     refs: UniqueMessageRefsSchema,
     context: z.string().max(1000)
+  }).strict(),
+  RequestBase.extend({
+    op: z.literal('propose-unsubscribe'),
+    ref: MessageRefSchema,
+    context: z.string().max(1000)
   }).strict()
 ]);
 
