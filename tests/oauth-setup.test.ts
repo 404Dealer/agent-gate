@@ -99,9 +99,7 @@ test('production installer retains rollback state until upgraded service is heal
 });
 
 test('production installer rsync preserves rollback snapshots', async () => {
-  const installer = await readFile(new URL('../scripts/install-production.sh', import.meta.url), 'utf8');
-  assert.match(installer, /--exclude '\/.rollback-\*\/'/);
-
+  const scriptPath = fileURLToPath(new URL('../scripts/install-production.sh', import.meta.url));
   const dir = await mkdtemp(join(tmpdir(), 'agent-gate-rsync-rollback-'));
   const source = join(dir, 'source');
   const install = join(dir, 'install');
@@ -111,8 +109,12 @@ test('production installer rsync preserves rollback snapshots', async () => {
     await mkdir(join(install, '.rollback-12345678'), { recursive: true });
     await writeFile(join(source, 'new-runtime'), 'new', 'utf8');
     await writeFile(rollbackFile, 'previous-config', 'utf8');
-    const sync = spawnSync('rsync', [
-      '-a', '--delete', '--exclude', '/.rollback-*/', `${source}/`, `${install}/`
+    const user = spawnSync('id', ['-un'], { encoding: 'utf8' }).stdout.trim();
+    const group = spawnSync('id', ['-gn'], { encoding: 'utf8' }).stdout.trim();
+    const sync = spawnSync('bash', [
+      '-c',
+      'source "$1"; SOURCE_DIR="$2"; INSTALL_DIR="$3"; sync_application_tree "$4"',
+      'bash', scriptPath, source, install, `${user}:${group}`
     ], { encoding: 'utf8' });
     assert.equal(sync.status, 0, sync.stderr || sync.stdout);
     assert.equal(await readFile(rollbackFile, 'utf8'), 'previous-config');
@@ -772,7 +774,9 @@ test('production OAuth wrapper is root-protected and starts agentgate with a cle
   assert.match(installer, /SOURCE_DIR=.*BASH_SOURCE/);
   assert.match(installer, /"\$SOURCE_DIR"\/ "\$INSTALL_DIR"\//);
   assert.match(installer, /Refusing symbolic link at protected install path/);
-  assert.match(installer, /rsync -a --delete --chown=root:root/);
+  assert.match(installer, /local ownership="\$\{1:-root:root\}"/);
+  assert.match(installer, /rsync -a --delete --chown="\$ownership"/);
+  assert.match(installer, /\nsync_application_tree\n/);
   assert.doesNotMatch(installer, /chown -R root:root "\$INSTALL_DIR"/);
   assert.match(installer, /chmod 711 "\$INSTALL_DIR"/);
   assert.match(installer, /chown root:root "\$INSTALL_DIR\/scripts"/);

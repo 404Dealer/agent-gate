@@ -88,6 +88,20 @@ resolve_trusted_executable() {
   printf '%s\n' "$canonical"
 }
 
+sync_application_tree() {
+  local ownership="${1:-root:root}"
+  rsync -a --delete --chown="$ownership" \
+    --exclude /.git/ \
+    --exclude '/.rollback-*/' \
+    --exclude /node_modules/ \
+    --exclude /dist/ \
+    --exclude /config/ \
+    --exclude /config.yaml \
+    --exclude /audit.log \
+    --exclude /drafts/ \
+    "$SOURCE_DIR"/ "$INSTALL_DIR"/
+}
+
 main() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -262,16 +276,7 @@ PREVIOUS_DIST="$ROLLBACK_ROOT/previous-dist"
 PREVIOUS_MODULES="$ROLLBACK_ROOT/previous-node-modules"
 
 mkdir -p "$CONFIG_DIR" "$INSTALL_DIR"/drafts/{inbox,pending,approved,sent,denied,failed}
-rsync -a --delete --chown=root:root \
-  --exclude /.git/ \
-  --exclude '/.rollback-*/' \
-  --exclude /node_modules/ \
-  --exclude /dist/ \
-  --exclude /config/ \
-  --exclude /config.yaml \
-  --exclude /audit.log \
-  --exclude /drafts/ \
-  "$SOURCE_DIR"/ "$INSTALL_DIR"/
+sync_application_tree
 
 # rsync applies root ownership only to copied application code. Excluded config,
 # runtime state, and the previous dist/node_modules retain their existing owners
