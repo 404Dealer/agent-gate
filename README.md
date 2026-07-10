@@ -49,7 +49,7 @@ agent-gate is only a **hard security boundary** when these requirements are true
 
 If you run agent-gate and your agent as the same Unix user, or give the agent direct send credentials, agent-gate is still useful as an approval workflow — but it is **not** a structural security boundary.
 
-See [docs/deployment.md](docs/deployment.md) for the production filesystem setup, [docs/hermes.md](docs/hermes.md) for Hermes-specific integration, [docs/credential-handoff.md](docs/credential-handoff.md) for operator responsibilities, [docs/smtp-onboarding.md](docs/smtp-onboarding.md) for simple Gmail App Password setup, and [docs/oauth-onboarding.md](docs/oauth-onboarding.md) for narrower OAuth authorization.
+See [docs/deployment.md](docs/deployment.md) for the production filesystem setup, [docs/hermes.md](docs/hermes.md) for Hermes-specific integration, [docs/credential-handoff.md](docs/credential-handoff.md) for operator responsibilities, [docs/smtp-onboarding.md](docs/smtp-onboarding.md) for simple Gmail App Password setup, [docs/mailbox-cleanup.md](docs/mailbox-cleanup.md) for human-gated Spam/Trash unread cleanup, and [docs/oauth-onboarding.md](docs/oauth-onboarding.md) for narrower OAuth authorization.
 
 ## How This Differs from Hermes Built-In Approval
 
@@ -271,6 +271,16 @@ sudo /opt/agent-gate/scripts/smtp-setup.sh gmail
 ```
 
 The SMTP helper verifies Gmail over TLS, stores the App Password directly under `agentgate`, writes only a versioned `${PASS:...}` reference to private config, and restarts the service. App Passwords are simpler but broader than the Gmail API `gmail.send` scope. See **[docs/smtp-onboarding.md](docs/smtp-onboarding.md)** for prerequisites, revocation, and exact behavior.
+
+### Human-gated Spam/Trash unread cleanup
+
+After Gmail SMTP onboarding, an operator can clear unread badges in Gmail's Spam and Trash folders without exposing mailbox credentials to Hermes:
+
+```bash
+sudo /opt/agent-gate/scripts/mailbox-cleanup.sh gmail
+```
+
+The helper previews counts, requires the exact phrase `MARK READ`, and adds only `\Seen` to the snapshotted unread UIDs. It never deletes, moves, empties, or displays messages. See **[docs/mailbox-cleanup.md](docs/mailbox-cleanup.md)** for UID snapshot semantics, auditing, partial outcomes, and troubleshooting.
 
 ### Secure OAuth onboarding
 

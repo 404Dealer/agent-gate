@@ -79,6 +79,7 @@ sudo stat -c '%U:%G %a %n' \
   /opt/agent-gate/scripts \
   /opt/agent-gate/scripts/oauth-setup.sh \
   /opt/agent-gate/scripts/smtp-setup.sh \
+  /opt/agent-gate/scripts/mailbox-cleanup.sh \
   /opt/agent-gate/config \
   /opt/agent-gate/config/config.yaml
 ```
@@ -138,6 +139,14 @@ sudo /opt/agent-gate/scripts/oauth-setup.sh zoho
 ```
 
 The SMTP helper verifies Gmail authentication over certificate-verified TLS, stores one versioned App Password directly in the `agentgate` `pass` store, atomically writes only its `${PASS:...}` reference plus safe sender metadata, and restarts the service. This path requires Google 2-Step Verification and App Password availability; it is simpler but the credential is broader than `gmail.send` OAuth. See [smtp-onboarding.md](smtp-onboarding.md).
+
+That installed App Password can also power the fixed-scope, human-gated unread cleanup helper:
+
+```bash
+sudo /opt/agent-gate/scripts/mailbox-cleanup.sh gmail
+```
+
+The helper shows only unread Spam/Trash counts and requires `MARK READ` before adding `\Seen` to the approved UID snapshot. It does not restart the service or delete, move, empty, fetch, or display messages. See [mailbox-cleanup.md](mailbox-cleanup.md).
 
 The OAuth helper runs as `agentgate` with a clean environment, stores refresh credentials directly in its `pass` store, verifies the authenticated sender/account, atomically writes only versioned `${PASS:...}` references to private config, and restarts the service. Gmail, Outlook, and Zoho use a loopback SSH tunnel by default; Outlook offers an explicit higher-risk `--device-code` fallback. See [oauth-onboarding.md](oauth-onboarding.md).
 

@@ -93,6 +93,16 @@ providers:
 
 `fromAddress` is trusted provider configuration. A draft's optional `from` field is ignored in both the approval preview and SMTP send.
 
+## Optional human-gated unread cleanup
+
+The verified Gmail App Password can also be used inside the same isolated `agentgate` boundary to mark unread Spam and Trash messages as read:
+
+```bash
+sudo /opt/agent-gate/scripts/mailbox-cleanup.sh gmail
+```
+
+This is a separate interactive operation. It previews counts and requires the exact phrase `MARK READ`; it does not delete, move, empty, fetch, or display messages and does not restart the service. See [mailbox-cleanup.md](mailbox-cleanup.md) for full security and recovery semantics.
+
 ## Generic authenticated SMTP
 
 The runtime provider also supports manually configured authenticated SMTP servers:

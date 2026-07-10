@@ -18,6 +18,17 @@ export async function promptText(question: string, defaultValue?: string): Promi
   }
 }
 
+/** Reads a literal approval phrase without whitespace normalization. */
+export async function promptLiteral(question: string): Promise<string> {
+  ensureInteractiveTty();
+  const readline = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await readline.question(`${question}: `);
+  } finally {
+    readline.close();
+  }
+}
+
 export async function promptConfirm(question: string): Promise<boolean> {
   const answer = (await promptText(`${question} [y/N]`)).toLowerCase();
   return answer === 'y' || answer === 'yes';

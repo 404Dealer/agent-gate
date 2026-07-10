@@ -89,13 +89,13 @@ test('production installer validates canonical safe arguments without side effec
 test('production installer retains rollback state until upgraded service is healthy', async () => {
   const installer = await readFile(new URL('../scripts/install-production.sh', import.meta.url), 'utf8');
   assert.match(installer, /restore_previous_deployment/);
-  assert.match(installer, /ROLLBACK_ROOT/);
+  assert.match(installer, /PREVIOUS_APP_TREE/);
   assert.match(installer, /PREVIOUS_CONFIG/);
   assert.match(installer, /PREVIOUS_UNIT/);
-  const healthCheck = installer.indexOf('if ! systemctl is-active --quiet "$SERVICE_NAME"');
+  const healthCheck = installer.lastIndexOf('wait_for_service_ready "$SERVICE_NAME" "$READY_FILE"');
   const discardRollback = installer.lastIndexOf('rm -rf -- "$ROLLBACK_ROOT"');
-  assert(healthCheck >= 0, 'installer must health-check the upgraded service');
-  assert(discardRollback > healthCheck, 'rollback state must survive until after the health check');
+  assert(healthCheck >= 0, 'installer must wait for PID-bound application readiness');
+  assert(discardRollback > healthCheck, 'rollback state must survive until after the readiness check');
 });
 
 test('production installer rsync preserves rollback snapshots', async () => {

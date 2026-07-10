@@ -6,7 +6,8 @@
   "bin": {
     "agent-gate": "./dist/index.js",
     "agent-gate-oauth": "./dist/oauth-setup.js",
-    "agent-gate-smtp-setup": "./dist/smtp-setup.js"
+    "agent-gate-smtp-setup": "./dist/smtp-setup.js",
+    "agent-gate-mailbox-cleanup": "./dist/mailbox-cleanup.js"
   },
   "files": [
     "dist/",
@@ -46,6 +47,7 @@
   "dependencies": {
     "chokidar": "^4.0.3",
     "grammy": "^1.35.1",
+    "imapflow": "1.4.6",
     "nodemailer": "9.0.3",
     "yaml": "^2.8.1",
     "zod": "^3.25.76"

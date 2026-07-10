@@ -11,6 +11,7 @@ export PATH="$TRUSTED_PATH"
 AGENT_USER="${SUDO_USER:-${USER:-}}"
 TELEGRAM_USER_ID=""
 INSTALL_DIR="/opt/agent-gate"
+GRANT_AGENT_AUDIT_READ=false
 SERVICE_USER="agentgate"
 INBOX_GROUP="agentgate-inbox"
 SERVICE_NAME="agent-gate.service"
@@ -18,7 +19,7 @@ SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 usage() {
   cat <<USAGE
-Usage: sudo $0 --telegram-user-id ID [--agent-user USER] [--install-dir /opt/agent-gate]
+Usage: sudo $0 --telegram-user-id ID [--agent-user USER] [--install-dir /opt/agent-gate] [--grant-agent-audit-read]
 
 Creates:
   - service user:        $SERVICE_USER
@@ -26,6 +27,9 @@ Creates:
   - root-owned app root: $INSTALL_DIR
   - private config dir:  $INSTALL_DIR/config
   - systemd service:     $SERVICE_NAME
+
+Agent access to audit.log is denied by default. Pass --grant-agent-audit-read
+only when the operator explicitly accepts exposing audit metadata to $AGENT_USER.
 
 Secrets are left as \${PASS:...} placeholders in config/config.yaml; add them to
 the agentgate user's pass store before starting the service for a real provider.
@@ -94,6 +98,7 @@ sync_application_tree() {
     --exclude /.git/ \
     --exclude /.hermes/ \
     --exclude '/.rollback-*/' \
+    --exclude '/.build-*/' \
     --exclude /node_modules/ \
     --exclude /dist/ \
     --exclude /config/ \
@@ -103,12 +108,101 @@ sync_application_tree() {
     "$SOURCE_DIR"/ "$INSTALL_DIR"/
 }
 
+snapshot_application_tree() {
+  local destination="$1"
+  mkdir -p "$destination"
+  rsync -a --delete \
+    --exclude /.git/ \
+    --exclude /.hermes/ \
+    --exclude '/.rollback-*/' \
+    --exclude '/.build-*/' \
+    --exclude /config/ \
+    --exclude /config.yaml \
+    --exclude /audit.log \
+    --exclude /drafts/ \
+    "$INSTALL_DIR"/ "$destination"/
+}
+
+restore_application_tree() {
+  local snapshot="$1"
+  rsync -a --delete \
+    --exclude '/.rollback-*/' \
+    --exclude '/.build-*/' \
+    --exclude /config/ \
+    --exclude /config.yaml \
+    --exclude /audit.log \
+    --exclude /drafts/ \
+    "$snapshot"/ "$INSTALL_DIR"/
+}
+
+wait_for_service_ready() {
+  local service="$1" ready_file="$2" attempts="${3:-30}"
+  local attempt main_pid restarts ready_pid="" last_pid="" last_restarts="" stable=0
+  for ((attempt = 1; attempt <= attempts; attempt += 1)); do
+    main_pid=""
+    restarts=""
+    ready_pid=""
+    if systemctl is-active --quiet "$service"; then
+      main_pid="$(systemctl show "$service" -p MainPID --value 2>/dev/null || true)"
+      restarts="$(systemctl show "$service" -p NRestarts --value 2>/dev/null || true)"
+      if [[ -f "$ready_file" && ! -L "$ready_file" ]]; then
+        IFS= read -r ready_pid < "$ready_file" || true
+      fi
+    fi
+
+    if [[ "$main_pid" =~ ^[1-9][0-9]*$ && "$restarts" =~ ^[0-9]+$ && "$ready_pid" == "$main_pid" ]]; then
+      if [[ "$main_pid" == "$last_pid" && "$restarts" == "$last_restarts" ]]; then
+        stable=$((stable + 1))
+      else
+        stable=1
+        last_pid="$main_pid"
+        last_restarts="$restarts"
+      fi
+      if (( stable >= 3 )); then
+        return 0
+      fi
+    else
+      stable=0
+      last_pid=""
+      last_restarts=""
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+configure_agent_audit_acl() {
+  local audit_path="$1" grant="$2" agent_user="$3" setfacl_bin="$4" getfacl_bin="$5"
+  local kind name permissions explicit_entry=""
+  if [[ "$grant" == true ]]; then
+    [[ -n "$setfacl_bin" && -n "$getfacl_bin" ]] || return 1
+    "$setfacl_bin" -m "u:$agent_user:r" "$audit_path"
+  elif [[ -n "$setfacl_bin" && -n "$getfacl_bin" ]]; then
+    "$setfacl_bin" -x "u:$agent_user" "$audit_path" 2>/dev/null || true
+  else
+    return 0
+  fi
+
+  while IFS=: read -r kind name permissions; do
+    if [[ "$kind" == "user" && "$name" == "$agent_user" ]]; then
+      explicit_entry="$permissions"
+    fi
+  done < <("$getfacl_bin" -cp -- "$audit_path")
+
+  if [[ "$grant" == true ]]; then
+    [[ "$explicit_entry" == "r--" ]]
+  else
+    [[ -z "$explicit_entry" ]]
+  fi
+}
+
 main() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --agent-user) AGENT_USER="${2:?}"; shift 2 ;;
     --telegram-user-id) TELEGRAM_USER_ID="${2:?}"; shift 2 ;;
     --install-dir) INSTALL_DIR="${2:?}"; shift 2 ;;
+    --grant-agent-audit-read) GRANT_AGENT_AUDIT_READ=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; usage; exit 2 ;;
   esac
@@ -158,9 +252,15 @@ if ! NODE_BIN="$(resolve_trusted_executable node)" \
   echo "Trusted root-owned node, npm, and pass executables are required on the fixed system PATH." >&2
   exit 1
 fi
+SETFACL_BIN="$(resolve_trusted_executable setfacl || true)"
+GETFACL_BIN="$(resolve_trusted_executable getfacl || true)"
+if [[ "$GRANT_AGENT_AUDIT_READ" == true && ( -z "$SETFACL_BIN" || -z "$GETFACL_BIN" ) ]]; then
+  echo "--grant-agent-audit-read requires trusted setfacl and getfacl executables." >&2
+  exit 1
+fi
 NODE_MAJOR="$("$NODE_BIN" -p 'Number(process.versions.node.split(".")[0])')"
-if [[ ! "$NODE_MAJOR" =~ ^[0-9]+$ ]] || (( NODE_MAJOR < 20 )); then
-  echo "agent-gate requires Node.js 20 or newer." >&2
+if [[ ! "$NODE_MAJOR" =~ ^[0-9]+$ ]] || (( NODE_MAJOR < 22 )); then
+  echo "agent-gate requires a supported Node.js 22 or newer runtime." >&2
   exit 1
 fi
 
@@ -174,15 +274,20 @@ BUILD_USER="agentgate-build-$$"
 BUILD_HOME=""
 BUILD_ROOT=""
 ROLLBACK_ROOT=""
+PREVIOUS_APP_TREE=""
 PREVIOUS_DIST=""
 PREVIOUS_MODULES=""
 PREVIOUS_CONFIG=""
 PREVIOUS_LEGACY_CONFIG=""
 PREVIOUS_UNIT=""
+APP_TREE_SYNCED=false
 RUNTIME_SWAPPED=false
 CONFIG_TOUCHED=false
 UNIT_WRITTEN=false
+SERVICE_WAS_ACTIVE=false
+SERVICE_STOPPED=false
 UNIT_PATH="/etc/systemd/system/$SERVICE_NAME"
+READY_FILE="/run/agent-gate/ready"
 
 cleanup_builder() {
   if id -- "$BUILD_USER" >/dev/null 2>&1; then
@@ -195,21 +300,19 @@ cleanup_builder() {
   BUILD_ROOT=""
 }
 
-SERVICE_WAS_ACTIVE=false
 if systemctl is-active --quiet "$SERVICE_NAME"; then
   SERVICE_WAS_ACTIVE=true
-  systemctl stop "$SERVICE_NAME"
 fi
 
 restore_previous_deployment() {
   local status=$?
   trap - EXIT
   if [[ $status -ne 0 ]]; then
-    systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
-    if [[ "$RUNTIME_SWAPPED" == true ]]; then
-      rm -rf -- "$INSTALL_DIR/dist" "$INSTALL_DIR/node_modules"
-      [[ -z "$PREVIOUS_DIST" || ! -e "$PREVIOUS_DIST" ]] || mv "$PREVIOUS_DIST" "$INSTALL_DIR/dist"
-      [[ -z "$PREVIOUS_MODULES" || ! -e "$PREVIOUS_MODULES" ]] || mv "$PREVIOUS_MODULES" "$INSTALL_DIR/node_modules"
+    if [[ "$SERVICE_STOPPED" == true || "$APP_TREE_SYNCED" == true || "$UNIT_WRITTEN" == true ]]; then
+      systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+    fi
+    if [[ "$APP_TREE_SYNCED" == true && -n "$PREVIOUS_APP_TREE" && -d "$PREVIOUS_APP_TREE" ]]; then
+      restore_application_tree "$PREVIOUS_APP_TREE" || true
     fi
     if [[ "$CONFIG_TOUCHED" == true ]]; then
       rm -f -- "$CONFIG_DIR/config.yaml" "$INSTALL_DIR/config.yaml"
@@ -227,7 +330,7 @@ restore_previous_deployment() {
   fi
   cleanup_builder
   [[ -z "$ROLLBACK_ROOT" ]] || rm -rf -- "$ROLLBACK_ROOT"
-  if [[ $status -ne 0 && "$SERVICE_WAS_ACTIVE" == true ]]; then
+  if [[ $status -ne 0 && "$SERVICE_WAS_ACTIVE" == true && "$SERVICE_STOPPED" == true ]]; then
     systemctl start "$SERVICE_NAME" >/dev/null 2>&1 || true
   fi
   exit "$status"
@@ -277,28 +380,12 @@ if [[ -f "$UNIT_PATH" ]]; then
 fi
 PREVIOUS_DIST="$ROLLBACK_ROOT/previous-dist"
 PREVIOUS_MODULES="$ROLLBACK_ROOT/previous-node-modules"
+PREVIOUS_APP_TREE="$ROLLBACK_ROOT/application-tree"
+snapshot_application_tree "$PREVIOUS_APP_TREE"
 
 mkdir -p "$CONFIG_DIR" "$INSTALL_DIR"/drafts/{inbox,pending,approved,sent,denied,failed}
-sync_application_tree
 
-# rsync applies root ownership only to copied application code. Excluded config,
-# runtime state, and the previous dist/node_modules retain their existing owners
-# until a verified replacement is ready.
-chmod 711 "$INSTALL_DIR"
-chown root:root "$INSTALL_DIR/scripts"
-chmod 755 "$INSTALL_DIR/scripts"
-chown root:root \
-  "$INSTALL_DIR/scripts/oauth-setup.sh" \
-  "$INSTALL_DIR/scripts/smtp-setup.sh" \
-  "$INSTALL_DIR/scripts/configure-provider-secrets.sh" \
-  "$INSTALL_DIR/scripts/install-production.sh"
-chmod 755 \
-  "$INSTALL_DIR/scripts/oauth-setup.sh" \
-  "$INSTALL_DIR/scripts/smtp-setup.sh" \
-  "$INSTALL_DIR/scripts/configure-provider-secrets.sh" \
-  "$INSTALL_DIR/scripts/install-production.sh"
-
-# Build a complete replacement runtime outside the live dist/node_modules. npm
+# Build a complete replacement runtime outside the live dist/node_modules while
 # lifecycle hooks stay disabled as root; TypeScript compilation runs as a
 # one-use account with no access to agentgate's config or credential store.
 BUILD_ROOT="$(mktemp -d "$INSTALL_DIR/.build-XXXXXXXX")"
@@ -344,6 +431,35 @@ if [[ -n "$build_symlink" ]]; then
 fi
 chown -hR root:"$SERVICE_GROUP" "$BUILD_ROOT/dist" "$BUILD_ROOT/node_modules"
 chmod -R u=rwX,g=rX,o= "$BUILD_ROOT/dist" "$BUILD_ROOT/node_modules"
+
+# Keep the live service running during network installation and compilation. The
+# outage begins only after the candidate runtime has built and passed structural checks.
+if [[ "$SERVICE_WAS_ACTIVE" == true ]]; then
+  systemctl stop "$SERVICE_NAME"
+  SERVICE_STOPPED=true
+fi
+
+APP_TREE_SYNCED=true
+sync_application_tree
+
+# rsync applies root ownership only to copied application code. Excluded config,
+# runtime state, and the previous dist/node_modules retain their existing owners
+# until the candidate runtime is swapped in.
+chmod 711 "$INSTALL_DIR"
+chown root:root "$INSTALL_DIR/scripts"
+chmod 755 "$INSTALL_DIR/scripts"
+chown root:root \
+  "$INSTALL_DIR/scripts/oauth-setup.sh" \
+  "$INSTALL_DIR/scripts/smtp-setup.sh" \
+  "$INSTALL_DIR/scripts/mailbox-cleanup.sh" \
+  "$INSTALL_DIR/scripts/configure-provider-secrets.sh" \
+  "$INSTALL_DIR/scripts/install-production.sh"
+chmod 755 \
+  "$INSTALL_DIR/scripts/oauth-setup.sh" \
+  "$INSTALL_DIR/scripts/smtp-setup.sh" \
+  "$INSTALL_DIR/scripts/mailbox-cleanup.sh" \
+  "$INSTALL_DIR/scripts/configure-provider-secrets.sh" \
+  "$INSTALL_DIR/scripts/install-production.sh"
 
 RUNTIME_SWAPPED=true
 [[ ! -e "$INSTALL_DIR/dist" ]] || mv "$INSTALL_DIR/dist" "$PREVIOUS_DIST"
@@ -414,8 +530,14 @@ done
 touch "$INSTALL_DIR/audit.log"
 chown "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/audit.log"
 chmod 640 "$INSTALL_DIR/audit.log"
-if command -v setfacl >/dev/null 2>&1; then
-  setfacl -m "u:$AGENT_USER:r" "$INSTALL_DIR/audit.log" || true
+if ! configure_agent_audit_acl \
+  "$INSTALL_DIR/audit.log" \
+  "$GRANT_AGENT_AUDIT_READ" \
+  "$AGENT_USER" \
+  "$SETFACL_BIN" \
+  "$GETFACL_BIN"; then
+  echo "Could not enforce the requested agent audit-log ACL policy." >&2
+  exit 1
 fi
 
 UNIT_WRITTEN=true
@@ -429,9 +551,12 @@ Wants=network-online.target
 Type=simple
 User=$SERVICE_USER
 Group=$SERVICE_GROUP
+RuntimeDirectory=agent-gate
+RuntimeDirectoryMode=0750
 WorkingDirectory=$INSTALL_DIR
 ExecStart=$NODE_BIN $INSTALL_DIR/dist/index.js
 Environment=AGENT_GATE_CONFIG=$CONFIG_DIR/config.yaml
+Environment=AGENT_GATE_READY_FILE=$READY_FILE
 Environment=AGENT_GATE_PASS_BIN=$PASS_BIN
 Environment=PASSWORD_STORE_DIR=/home/$SERVICE_USER/.password-store
 Environment=GNUPGHOME=/home/$SERVICE_USER/.gnupg
@@ -465,8 +590,8 @@ systemctl daemon-reload
 systemctl enable "$SERVICE_NAME" >/dev/null
 if [[ "$SERVICE_WAS_ACTIVE" == true ]]; then
   systemctl start "$SERVICE_NAME"
-  if ! systemctl is-active --quiet "$SERVICE_NAME"; then
-    echo "Upgraded service failed its active-state health check; restoring the previous deployment." >&2
+  if ! wait_for_service_ready "$SERVICE_NAME" "$READY_FILE" 30; then
+    echo "Upgraded service failed PID-bound readiness and restart-stability checks; restoring the previous deployment." >&2
     exit 1
   fi
 fi
