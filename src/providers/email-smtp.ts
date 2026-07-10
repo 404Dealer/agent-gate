@@ -1,5 +1,6 @@
 import nodemailer from 'nodemailer';
 import type SMTPTransport from 'nodemailer/lib/smtp-transport/index.js';
+import { isIP } from 'node:net';
 import type { ProviderConfig } from '../config.js';
 import type { Draft } from '../schema.js';
 import type { Provider, ProviderResult } from './index.js';
@@ -50,7 +51,10 @@ export function buildSmtpTransportOptions(config: SmtpConnectionConfig): SmtpTra
     socketTimeout: SMTP_TIMEOUT_MS,
     disableFileAccess: true,
     disableUrlAccess: true,
-    tls: { servername: config.host, rejectUnauthorized: true }
+    tls: {
+      ...(isIP(config.host) === 0 ? { servername: config.host } : {}),
+      rejectUnauthorized: true
+    }
   };
 }
 

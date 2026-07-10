@@ -215,6 +215,24 @@ test('smtp provider requires STARTTLS when configured', async () => {
   });
 });
 
+test('smtp provider omits invalid SNI for an IP host while keeping certificate verification', () => {
+  let transportOptions: SmtpTransportOptions | undefined;
+  new SmtpEmailProvider({
+    type: 'email-smtp',
+    host: '192.0.2.1',
+    port: 465,
+    tlsMode: 'implicit',
+    username: 'sender@example.com',
+    password: 'app-password',
+    fromAddress: 'sender@example.com'
+  }, (options) => {
+    transportOptions = options;
+    return { sendMail: async () => ({ accepted: ['recipient@example.com'] }) };
+  });
+
+  assert.deepEqual(transportOptions?.tls, { rejectUnauthorized: true });
+});
+
 test('smtp provider replaces transport failures with a fixed redacted error', async () => {
   const provider = new SmtpEmailProvider({
     type: 'email-smtp',
