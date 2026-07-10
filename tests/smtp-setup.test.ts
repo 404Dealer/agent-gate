@@ -28,6 +28,7 @@ test('production SMTP wrapper enforces TTY, trusted install paths, privilege dro
 
   const installer = await readFile(new URL('../scripts/install-production.sh', import.meta.url), 'utf8');
   assert.match(installer, /"\$INSTALL_DIR\/scripts\/smtp-setup\.sh"/);
+  assert.match(installer, /--exclude \/\.hermes\//);
 });
 
 test('SMTP setup CLI accepts only a Gmail preset and a non-secret config path', () => {

@@ -92,6 +92,7 @@ sync_application_tree() {
   local ownership="${1:-root:root}"
   rsync -a --delete --chown="$ownership" \
     --exclude /.git/ \
+    --exclude /.hermes/ \
     --exclude '/.rollback-*/' \
     --exclude /node_modules/ \
     --exclude /dist/ \
