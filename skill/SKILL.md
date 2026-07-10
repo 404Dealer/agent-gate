@@ -1,6 +1,6 @@
 ---
 name: agent-gate
-description: Read Gmail through a bounded credential-isolated mailbox broker, and send emails or other external actions through a human-approved deterministic gate. Use for mailbox triage, mark-read, outbound email, replies, forwards, webhooks, and gated side effects.
+description: Read Gmail through a bounded credential-isolated mailbox broker, and execute email, Trash, unsubscribe, or other external actions through a human-approved deterministic gate. Use for mailbox triage, mark-read, outbound email, replies, forwards, unsubscribe, webhooks, and gated side effects.
 version: 1.2.0
 author: 404Dealer
 license: MIT
@@ -35,6 +35,7 @@ Use for:
 - listing recent Gmail INBOX metadata
 - reading and summarizing an exact INBOX message
 - marking exact message references read when the user has granted that direct permission
+- proposing exact Gmail Trash moves and standards-based unsubscribe requests for Telegram approval
 - sending or replying to email
 - forwarding email
 - sending webhooks/API calls
