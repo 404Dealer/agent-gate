@@ -14,6 +14,7 @@ INSTALL_DIR="/opt/agent-gate"
 GRANT_AGENT_AUDIT_READ=false
 SERVICE_USER="agentgate"
 INBOX_GROUP="agentgate-inbox"
+MAILBOX_GROUP="agentgate-mailbox"
 SERVICE_NAME="agent-gate.service"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
@@ -24,6 +25,7 @@ Usage: sudo $0 --telegram-user-id ID [--agent-user USER] [--install-dir /opt/age
 Creates:
   - service user:        $SERVICE_USER
   - write-only group:    $INBOX_GROUP
+  - mailbox-read group:  $MAILBOX_GROUP
   - root-owned app root: $INSTALL_DIR
   - private config dir:  $INSTALL_DIR/config
   - systemd service:     $SERVICE_NAME
@@ -266,9 +268,16 @@ fi
 
 id "$SERVICE_USER" >/dev/null 2>&1 || useradd -r -m -d /home/$SERVICE_USER -s /usr/sbin/nologin "$SERVICE_USER"
 getent group "$INBOX_GROUP" >/dev/null || groupadd --system "$INBOX_GROUP"
-usermod -aG "$INBOX_GROUP" "$SERVICE_USER"
-usermod -aG "$INBOX_GROUP" "$AGENT_USER"
+getent group "$MAILBOX_GROUP" >/dev/null || groupadd --system "$MAILBOX_GROUP"
+usermod -aG "$INBOX_GROUP,$MAILBOX_GROUP" "$SERVICE_USER"
+usermod -aG "$INBOX_GROUP,$MAILBOX_GROUP" "$AGENT_USER"
 SERVICE_GROUP="$(id -gn "$SERVICE_USER")"
+MAILBOX_GROUP_RECORD="$(getent group "$MAILBOX_GROUP")"
+IFS=: read -r _ _ MAILBOX_GROUP_GID _ <<< "$MAILBOX_GROUP_RECORD"
+if [[ ! "$MAILBOX_GROUP_GID" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Could not resolve the mailbox capability group ID." >&2
+  exit 1
+fi
 CONFIG_DIR="$INSTALL_DIR/config"
 BUILD_USER="agentgate-build-$$"
 BUILD_HOME=""
@@ -468,6 +477,12 @@ mv "$BUILD_ROOT/node_modules" "$INSTALL_DIR/node_modules"
 mv "$BUILD_ROOT/dist" "$INSTALL_DIR/dist"
 cleanup_builder
 
+# Expose only the credential-free mailbox client to the dedicated capability
+# group. The rest of the compiled service tree remains private to agentgate.
+chmod 751 "$INSTALL_DIR/dist"
+chown root:"$MAILBOX_GROUP" "$INSTALL_DIR/dist/mailbox-client.js"
+chmod 750 "$INSTALL_DIR/dist/mailbox-client.js"
+
 chown -hR root:root "$INSTALL_DIR/src"
 chmod -R u=rwX,go= "$INSTALL_DIR/src"
 
@@ -551,12 +566,14 @@ Wants=network-online.target
 Type=simple
 User=$SERVICE_USER
 Group=$SERVICE_GROUP
-RuntimeDirectory=agent-gate
-RuntimeDirectoryMode=0750
+RuntimeDirectory=agent-gate agent-gate-mailbox
+RuntimeDirectoryMode=0711
 WorkingDirectory=$INSTALL_DIR
 ExecStart=$NODE_BIN $INSTALL_DIR/dist/index.js
 Environment=AGENT_GATE_CONFIG=$CONFIG_DIR/config.yaml
 Environment=AGENT_GATE_READY_FILE=$READY_FILE
+Environment=AGENT_GATE_MAILBOX_SOCKET=/run/agent-gate-mailbox/broker.sock
+Environment=AGENT_GATE_MAILBOX_GID=$MAILBOX_GROUP_GID
 Environment=AGENT_GATE_PASS_BIN=$PASS_BIN
 Environment=PASSWORD_STORE_DIR=/home/$SERVICE_USER/.password-store
 Environment=GNUPGHOME=/home/$SERVICE_USER/.gnupg
@@ -607,10 +624,11 @@ Next steps:
 1. Configure secrets for the $SERVICE_USER user, or keep provider=log for dry-run.
 2. Start: sudo systemctl start $SERVICE_NAME
 3. Verify: sudo journalctl -u $SERVICE_NAME -n 50 --no-pager
-4. Re-login $AGENT_USER so membership in $INBOX_GROUP is active.
+4. Re-login $AGENT_USER so membership in $INBOX_GROUP and $MAILBOX_GROUP is active.
 
-Hermes/agent dropbox path:
-  $INSTALL_DIR/drafts/inbox
+Hermes/agent paths:
+  Draft dropbox: $INSTALL_DIR/drafts/inbox
+  Mailbox client: $INSTALL_DIR/dist/mailbox-client.js
 DONE
 }
 

@@ -7,7 +7,8 @@
     "agent-gate": "./dist/index.js",
     "agent-gate-oauth": "./dist/oauth-setup.js",
     "agent-gate-smtp-setup": "./dist/smtp-setup.js",
-    "agent-gate-mailbox-cleanup": "./dist/mailbox-cleanup.js"
+    "agent-gate-mailbox-cleanup": "./dist/mailbox-cleanup.js",
+    "agent-gate-mailbox": "./dist/mailbox-client.js"
   },
   "files": [
     "dist/",
@@ -42,17 +43,19 @@
     "url": "https://github.com/404Dealer/agent-gate/issues"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
   "dependencies": {
     "chokidar": "^4.0.3",
     "grammy": "^1.35.1",
     "imapflow": "1.4.6",
+    "mailparser": "3.9.14",
     "nodemailer": "9.0.3",
     "yaml": "^2.8.1",
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@types/mailparser": "3.4.6",
     "@types/node": "^24.13.3",
     "@types/nodemailer": "^8.0.1",
     "tsx": "^4.23.0",
