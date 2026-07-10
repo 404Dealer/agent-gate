@@ -256,8 +256,8 @@ export class AgentGateBot {
           result = await this.executor.executeApprovedDraft(approvedPath);
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
-          await ctx.reply(`⚠️ Approved but send failed: ${errMsg}`);
-          await ctx.answerCallbackQuery({ text: '⚠️ Send failed', show_alert: true });
+          await ctx.answerCallbackQuery({ text: '⚠️ Send failed', show_alert: true }).catch(() => {});
+          await ctx.reply(`⚠️ Approved but send failed: ${errMsg}`).catch(() => {});
           return;
         }
 
