@@ -6,6 +6,7 @@ import type { AgentGateConfig } from './config.js';
 import type { DraftWatcher } from './watcher.js';
 import { DraftSchema, updateStatus, type Draft } from './schema.js';
 import { Executor, type ExecutionResult } from './executor.js';
+import type { MailboxTrashSnapshot } from './mailbox-broker/gmail-trash.js';
 
 export interface ApprovalPreviewOptions {
   configuredSender: string;
@@ -26,6 +27,7 @@ export interface ApprovalTokenRecord {
   fileName: string;
   hash: string;
   expiresAt: number;
+  mailboxTrashSnapshot?: MailboxTrashSnapshot;
 }
 
 export interface DeliveryNotification {
@@ -98,6 +100,30 @@ export async function executeAndNotifyDelivery(
   await channel.reply(notification.replyText ?? notification.callbackText).catch(() => {});
 }
 
+export async function executeAndNotifyMailboxTrash(
+  execute: () => Promise<ExecutionResult>,
+  channel: DeliveryNotificationChannel
+): Promise<void> {
+  await channel.acknowledge('✅ Approved; moving to Trash…').catch(() => {});
+  try {
+    const result = await execute();
+    if (result.outcome !== 'moved' && result.outcome !== 'move-partial') {
+      throw new Error('Unexpected mailbox execution result');
+    }
+    if (result.persistenceWarning) {
+      await channel.reply(`⚠️ Gmail moved ${result.verifiedMovedCount}/${result.requestedCount} message(s), but local archive/audit finalization failed. Do not retry automatically.`).catch(() => {});
+    } else if (result.outcome === 'moved') {
+      await channel.reply(`🗑️ Moved ${result.verifiedMovedCount} message(s) to Gmail Trash.`).catch(() => {});
+    } else {
+      await channel.reply(`⚠️ Gmail move was only partially verified (${result.verifiedMovedCount}/${result.requestedCount}). Do not retry automatically.`).catch(() => {});
+    }
+  } catch (error) {
+    const raw = error instanceof Error ? error.message : String(error);
+    const safeError = raw.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500);
+    await channel.reply(`⚠️ Approved but move to Trash failed: ${safeError}`).catch(() => {});
+  }
+}
+
 const APPROVAL_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const preview = (value: string, limit: number): string => (value.length > limit ? `${value.slice(0, limit)}...` : value);
 export const sha256hex = (value: string): string => createHash('sha256').update(value).digest('hex');
@@ -164,6 +190,38 @@ export function buildApprovalPreview(draft: Draft, options: ApprovalPreviewOptio
     canApprove,
     fullBodyChars: body.length,
     shownBodyChars: Math.min(body.length, options.bodyPreviewChars)
+  };
+}
+
+export function buildMailboxTrashPreview(draft: Extract<Draft, { type: 'mailbox-trash' }>, snapshot: MailboxTrashSnapshot): ApprovalPreview {
+  const perItem = Math.max(110, Math.floor(3000 / snapshot.items.length));
+  const fromLimit = Math.max(35, Math.floor(perItem * 0.4));
+  const subjectLimit = Math.max(50, perItem - fromLimit - 28);
+  const itemLines = snapshot.items.map((item, index) => {
+    const date = item.receivedAt ? item.receivedAt.slice(0, 10) : 'unknown date';
+    return `${index + 1}. UID ${item.uid} · ${preview(item.from, fromLimit)} — ${preview(item.subject, subjectLimit)} — ${date}`;
+  });
+  const text = [
+    '🗑️ Mailbox Trash Request',
+    '',
+    `Account: ${preview(snapshot.account, 320)}`,
+    `Source: ${snapshot.sourcePath} · UIDVALIDITY ${snapshot.uidValidity}`,
+    `Destination: ${preview(snapshot.trashPath.replace(/[\r\n\t]+/g, ' '), 300)}`,
+    `Action: Move ${snapshot.items.length} exact message(s) to Gmail Trash`,
+    'Permanent deletion/EXPUNGE: unavailable',
+    '',
+    ...itemLines,
+    '',
+    `Source: ${draft.source}`,
+    `Context: ${preview(draft.metadata.context || '[none]', 500)}`,
+    '',
+    'Approve only if every listed message should be moved to Trash.'
+  ].join('\n');
+  return {
+    text,
+    canApprove: text.length <= 4096,
+    fullBodyChars: text.length,
+    shownBodyChars: Math.min(text.length, 4096)
   };
 }
 
@@ -278,13 +336,21 @@ export class AgentGateBot {
         }
         await ctx.editMessageText(`${originalText}\n\n✅ APPROVED at ${timestamp}`).catch(() => {});
 
-        await executeAndNotifyDelivery(
-          () => this.executor.executeApprovedDraft(approvedPath),
-          {
-            acknowledge: (text) => ctx.answerCallbackQuery({ text }),
-            reply: (text) => ctx.reply(text)
-          }
-        );
+        const channel = {
+          acknowledge: (text: string) => ctx.answerCallbackQuery({ text }),
+          reply: (text: string) => ctx.reply(text)
+        };
+        if (draft.type === 'mailbox-trash') {
+          await executeAndNotifyMailboxTrash(
+            () => this.executor.executeApprovedDraft(approvedPath, record.mailboxTrashSnapshot),
+            channel
+          );
+        } else {
+          await executeAndNotifyDelivery(
+            () => this.executor.executeApprovedDraft(approvedPath),
+            channel
+          );
+        }
         return;
       }
 
@@ -313,8 +379,10 @@ export class AgentGateBot {
       try {
         await this.sendDraftForApproval(draft, basename(filePath));
       } catch (err) {
+        const safeError = err instanceof Error ? err.message : 'Approval preview failed';
+        await this.watcher.failPending(filePath, safeError).catch(() => {});
         // eslint-disable-next-line no-console
-        console.error(`[agent-gate] failed to send draft preview for ${basename(filePath)}:`, err instanceof Error ? err.message : err);
+        console.error(`[agent-gate] failed to send draft preview for ${basename(filePath)}:`, safeError);
       }
     });
   }
@@ -345,19 +413,26 @@ export class AgentGateBot {
     }
   }
 
-  private async sendDraftForApproval(draft: Draft, fileName: string): Promise<void> {
+  private async sendDraftForApproval(_draft: Draft, fileName: string): Promise<void> {
     const draftPath = resolve(this.draftsRoot, 'pending', fileName);
     const draftRaw = await readFile(draftPath, 'utf8');
-    const token = createApprovalToken(fileName, draftRaw);
+    const boundDraft = DraftSchema.parse(JSON.parse(draftRaw));
+    let token = createApprovalToken(fileName, draftRaw);
+    const providerName = boundDraft.provider || this.config.defaults.provider;
+    let previewResult: ApprovalPreview;
+    if (boundDraft.type === 'mailbox-trash') {
+      const mailboxTrashSnapshot = await this.executor.prepareMailboxTrash(boundDraft);
+      token = { ...token, mailboxTrashSnapshot };
+      previewResult = buildMailboxTrashPreview(boundDraft, mailboxTrashSnapshot);
+    } else {
+      previewResult = buildApprovalPreview(boundDraft, {
+        configuredSender: this.executor.describeProviderSender(providerName),
+        providerName,
+        bodyPreviewChars: this.config.approval.bodyPreviewChars,
+        allowTruncatedApproval: this.config.approval.allowTruncatedApproval
+      });
+    }
     this.approvalIndex.set(token.callbackToken, token);
-
-    const providerName = draft.provider || this.config.defaults.provider;
-    const previewResult = buildApprovalPreview(draft, {
-      configuredSender: this.executor.describeProviderSender(providerName),
-      providerName,
-      bodyPreviewChars: this.config.approval.bodyPreviewChars,
-      allowTruncatedApproval: this.config.approval.allowTruncatedApproval
-    });
 
     const keyboard = new InlineKeyboard();
     if (previewResult.canApprove) {

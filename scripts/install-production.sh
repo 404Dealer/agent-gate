@@ -14,6 +14,8 @@ INSTALL_DIR="/opt/agent-gate"
 GRANT_AGENT_AUDIT_READ=false
 SERVICE_USER="agentgate"
 INBOX_GROUP="agentgate-inbox"
+MAILBOX_GROUP="agentgate-mailbox"
+MAILBOX_CLI_PATH="/usr/local/bin/agent-gate-mailbox"
 SERVICE_NAME="agent-gate.service"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
@@ -24,6 +26,7 @@ Usage: sudo $0 --telegram-user-id ID [--agent-user USER] [--install-dir /opt/age
 Creates:
   - service user:        $SERVICE_USER
   - write-only group:    $INBOX_GROUP
+  - mailbox-read group:  $MAILBOX_GROUP
   - root-owned app root: $INSTALL_DIR
   - private config dir:  $INSTALL_DIR/config
   - systemd service:     $SERVICE_NAME
@@ -229,6 +232,10 @@ if ! validate_install_dir "$INSTALL_DIR"; then
   exit 2
 fi
 validate_trusted_path || exit 1
+if [[ -L "$MAILBOX_CLI_PATH" || ( -e "$MAILBOX_CLI_PATH" && ! -f "$MAILBOX_CLI_PATH" ) ]]; then
+  echo "Refusing unsafe existing mailbox client path: $MAILBOX_CLI_PATH" >&2
+  exit 1
+fi
 
 if [[ ! -f "$SOURCE_DIR/package.json" || ! -f "$SOURCE_DIR/package-lock.json" || ! -d "$SOURCE_DIR/src" ]]; then
   echo "Installer source is not a complete agent-gate checkout: $SOURCE_DIR" >&2
@@ -266,9 +273,16 @@ fi
 
 id "$SERVICE_USER" >/dev/null 2>&1 || useradd -r -m -d /home/$SERVICE_USER -s /usr/sbin/nologin "$SERVICE_USER"
 getent group "$INBOX_GROUP" >/dev/null || groupadd --system "$INBOX_GROUP"
-usermod -aG "$INBOX_GROUP" "$SERVICE_USER"
-usermod -aG "$INBOX_GROUP" "$AGENT_USER"
+getent group "$MAILBOX_GROUP" >/dev/null || groupadd --system "$MAILBOX_GROUP"
+usermod -aG "$INBOX_GROUP,$MAILBOX_GROUP" "$SERVICE_USER"
+usermod -aG "$INBOX_GROUP,$MAILBOX_GROUP" "$AGENT_USER"
 SERVICE_GROUP="$(id -gn "$SERVICE_USER")"
+MAILBOX_GROUP_RECORD="$(getent group "$MAILBOX_GROUP")"
+IFS=: read -r _ _ MAILBOX_GROUP_GID _ <<< "$MAILBOX_GROUP_RECORD"
+if [[ ! "$MAILBOX_GROUP_GID" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Could not resolve the mailbox capability group ID." >&2
+  exit 1
+fi
 CONFIG_DIR="$INSTALL_DIR/config"
 BUILD_USER="agentgate-build-$$"
 BUILD_HOME=""
@@ -280,6 +294,10 @@ PREVIOUS_MODULES=""
 PREVIOUS_CONFIG=""
 PREVIOUS_LEGACY_CONFIG=""
 PREVIOUS_UNIT=""
+PREVIOUS_MAILBOX_CLI=""
+MAILBOX_CLI_EXISTED=false
+MAILBOX_CLI_TOUCHED=false
+MAILBOX_CLI_TEMP=""
 APP_TREE_SYNCED=false
 RUNTIME_SWAPPED=false
 CONFIG_TOUCHED=false
@@ -296,8 +314,10 @@ cleanup_builder() {
   fi
   [[ -z "$BUILD_HOME" ]] || rm -rf -- "$BUILD_HOME"
   [[ -z "$BUILD_ROOT" ]] || rm -rf -- "$BUILD_ROOT"
+  [[ -z "$MAILBOX_CLI_TEMP" ]] || rm -f -- "$MAILBOX_CLI_TEMP"
   BUILD_HOME=""
   BUILD_ROOT=""
+  MAILBOX_CLI_TEMP=""
 }
 
 if systemctl is-active --quiet "$SERVICE_NAME"; then
@@ -326,6 +346,13 @@ restore_previous_deployment() {
         rm -f -- "$UNIT_PATH"
       fi
       systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+    if [[ "$MAILBOX_CLI_TOUCHED" == true ]]; then
+      if [[ "$MAILBOX_CLI_EXISTED" == true && -n "$PREVIOUS_MAILBOX_CLI" && -f "$PREVIOUS_MAILBOX_CLI" ]]; then
+        install -o root -g root -m 0755 "$PREVIOUS_MAILBOX_CLI" "$MAILBOX_CLI_PATH"
+      else
+        rm -f -- "$MAILBOX_CLI_PATH"
+      fi
     fi
   fi
   cleanup_builder
@@ -377,6 +404,11 @@ fi
 if [[ -f "$UNIT_PATH" ]]; then
   PREVIOUS_UNIT="$ROLLBACK_ROOT/agent-gate.service"
   cp -a "$UNIT_PATH" "$PREVIOUS_UNIT"
+fi
+if [[ -f "$MAILBOX_CLI_PATH" ]]; then
+  MAILBOX_CLI_EXISTED=true
+  PREVIOUS_MAILBOX_CLI="$ROLLBACK_ROOT/agent-gate-mailbox"
+  cp -a "$MAILBOX_CLI_PATH" "$PREVIOUS_MAILBOX_CLI"
 fi
 PREVIOUS_DIST="$ROLLBACK_ROOT/previous-dist"
 PREVIOUS_MODULES="$ROLLBACK_ROOT/previous-node-modules"
@@ -551,12 +583,15 @@ Wants=network-online.target
 Type=simple
 User=$SERVICE_USER
 Group=$SERVICE_GROUP
-RuntimeDirectory=agent-gate
-RuntimeDirectoryMode=0750
+SupplementaryGroups=$INBOX_GROUP $MAILBOX_GROUP
+RuntimeDirectory=agent-gate agent-gate-mailbox
+RuntimeDirectoryMode=0711
 WorkingDirectory=$INSTALL_DIR
 ExecStart=$NODE_BIN $INSTALL_DIR/dist/index.js
 Environment=AGENT_GATE_CONFIG=$CONFIG_DIR/config.yaml
 Environment=AGENT_GATE_READY_FILE=$READY_FILE
+Environment=AGENT_GATE_MAILBOX_SOCKET=/run/agent-gate-mailbox/broker.sock
+Environment=AGENT_GATE_MAILBOX_GID=$MAILBOX_GROUP_GID
 Environment=AGENT_GATE_PASS_BIN=$PASS_BIN
 Environment=PASSWORD_STORE_DIR=/home/$SERVICE_USER/.password-store
 Environment=GNUPGHOME=/home/$SERVICE_USER/.gnupg
@@ -595,6 +630,22 @@ if [[ "$SERVICE_WAS_ACTIVE" == true ]]; then
     exit 1
   fi
 fi
+MAILBOX_CLI_TEMP="$MAILBOX_CLI_PATH.new.$$"
+install -o root -g root -m 0755 "$INSTALL_DIR/dist/mailbox-client.js" "$MAILBOX_CLI_TEMP"
+MAILBOX_CLI_TOUCHED=true
+mv -T -- "$MAILBOX_CLI_TEMP" "$MAILBOX_CLI_PATH"
+MAILBOX_CLI_TEMP=""
+if [[ -L "$MAILBOX_CLI_PATH" || ! -f "$MAILBOX_CLI_PATH" || "$(stat -c '%U:%G:%a' "$MAILBOX_CLI_PATH")" != "root:root:755" ]]; then
+  echo "Installed mailbox client failed ownership/mode verification." >&2
+  exit 1
+fi
+if [[ "$SERVICE_WAS_ACTIVE" == true ]]; then
+  MAILBOX_SOCKET_PATH="/run/agent-gate-mailbox/broker.sock"
+  if [[ ! -S "$MAILBOX_SOCKET_PATH" || "$(stat -c '%U:%G:%a' "$MAILBOX_SOCKET_PATH")" != "$SERVICE_USER:$MAILBOX_GROUP:660" ]]; then
+    echo "Mailbox broker socket failed ownership/mode verification." >&2
+    exit 1
+  fi
+fi
 rm -rf -- "$ROLLBACK_ROOT"
 ROLLBACK_ROOT=""
 trap - EXIT
@@ -607,10 +658,11 @@ Next steps:
 1. Configure secrets for the $SERVICE_USER user, or keep provider=log for dry-run.
 2. Start: sudo systemctl start $SERVICE_NAME
 3. Verify: sudo journalctl -u $SERVICE_NAME -n 50 --no-pager
-4. Re-login $AGENT_USER so membership in $INBOX_GROUP is active.
+4. Re-login $AGENT_USER so membership in $INBOX_GROUP and $MAILBOX_GROUP is active.
 
-Hermes/agent dropbox path:
-  $INSTALL_DIR/drafts/inbox
+Hermes/agent paths:
+  Draft dropbox: $INSTALL_DIR/drafts/inbox
+  Mailbox client: $MAILBOX_CLI_PATH
 DONE
 }
 
