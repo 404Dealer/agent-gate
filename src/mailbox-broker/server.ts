@@ -75,15 +75,26 @@ export class MailboxBrokerServer {
 
   private profileFromReference(encodedReference: string): string {
     const reference = decodeInboxReference(encodedReference);
-    if (reference.v === 2) return this.selectedProfile(reference.profile);
-    return this.legacyGmailProfile();
+    const profile = reference.v === 2
+      ? this.selectedProfile(reference.profile)
+      : this.legacyGmailProfile();
+    if (reference.v === 2 && this.adapter(profile).backend !== reference.backend) {
+      throw new Error('Mailbox reference belongs to a different profile');
+    }
+    return profile;
   }
 
   private profileFromReferences(encodedReferences: readonly string[]): string {
     const references = decodeUniqueInboxReferences(encodedReferences);
     const first = references[0];
     if (!first) throw new Error('Invalid message reference');
-    return first.v === 2 ? this.selectedProfile(first.profile) : this.legacyGmailProfile();
+    const profile = first.v === 2
+      ? this.selectedProfile(first.profile)
+      : this.legacyGmailProfile();
+    if (first.v === 2 && this.adapter(profile).backend !== first.backend) {
+      throw new Error('Mailbox reference belongs to a different profile');
+    }
+    return profile;
   }
 
   private adapter(profile: string): MailboxAdapter {

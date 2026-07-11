@@ -306,7 +306,12 @@ export class GmailUnsubscribeService {
   }
 
   async executeHttps(snapshot: Extract<MailboxUnsubscribeSnapshot, { method: 'rfc8058-https-post' }>): Promise<MailboxUnsubscribeResult> {
-    if (snapshot.provider !== this.providerName || snapshot.profile !== this.profile || snapshot.account !== cleanLine(this.address, 320)) {
+    if (
+      snapshot.backend !== 'gmail' ||
+      snapshot.provider !== this.providerName ||
+      snapshot.profile !== this.profile ||
+      snapshot.account !== cleanLine(this.address, 320)
+    ) {
       throw new Error('Approved unsubscribe profile changed');
     }
     return executeHttpsUnsubscribe(snapshot);

@@ -9,6 +9,7 @@ import { GmailInboxBroker } from '../src/mailbox-broker/gmail-inbox.js';
 import { GmailMailboxTrashService } from '../src/mailbox-broker/gmail-trash.js';
 import { GmailUnsubscribeService } from '../src/mailbox-broker/gmail-unsubscribe.js';
 import { MailboxBrokerServer } from '../src/mailbox-broker/server.js';
+import { MailboxRequestSchema, MAX_REQUEST_BYTES } from '../src/mailbox-broker/protocol.js';
 import type { MailboxAdapter } from '../src/mailbox-broker/adapter.js';
 import { DraftSchema } from '../src/schema.js';
 
@@ -211,6 +212,78 @@ test('legacy Gmail references route to the unique gmail-smtp compatibility profi
   assert.deepEqual(await broker.execute(request('propose-unsubscribe', { ref, context: 'test' })), {
     profile: 'personal'
   });
+});
+
+test('profile routing rejects a canonical reference whose backend disagrees with the configured profile', async () => {
+  let proposals = 0;
+  const work: MailboxAdapter = {
+    profile: 'work',
+    providerName: 'outlook-work',
+    backend: 'outlook',
+    address: 'work@outlook.com',
+    list: async () => ({ items: [], scannedUidWindow: 0, truncated: false }),
+    read: async () => { throw new Error('adapter must not run'); },
+    markRead: async () => { throw new Error('adapter must not run'); }
+  };
+  const broker = new MailboxBrokerServer(
+    new Map([['work', work]]),
+    '/run/agent-gate-mailbox/broker.sock',
+    1,
+    async () => { proposals += 1; return {}; },
+    async () => { proposals += 1; return {}; }
+  ) as unknown as { execute(request: unknown): Promise<unknown> };
+  const forged = encodeInboxReference({
+    profile: 'work',
+    backend: 'gmail',
+    uidValidity: '123',
+    uid: 44
+  });
+  const request = (op: string, fields: Record<string, unknown>) => ({
+    v: 1,
+    id: '550e8400-e29b-41d4-a716-446655440000',
+    op,
+    ...fields
+  });
+
+  await assert.rejects(() => broker.execute(request('read', { ref: forged })), /different profile/);
+  await assert.rejects(() => broker.execute(request('mark-read', { refs: [forged] })), /different profile/);
+  await assert.rejects(() => broker.execute(request('propose-trash', { refs: [forged], context: 'test' })), /different profile/);
+  await assert.rejects(() => broker.execute(request('propose-unsubscribe', { ref: forged, context: 'test' })), /different profile/);
+  assert.equal(proposals, 0);
+});
+
+test('request byte cap accepts the schema maximum batch of long Outlook references', () => {
+  const refs = Array.from({ length: 20 }, (_, index) => encodeOutlookInboxReference({
+    profile: 'work',
+    messageId: `${String(index).padStart(2, '0')}${'A'.repeat(2046)}`
+  }));
+  const request = {
+    v: 1 as const,
+    id: '550e8400-e29b-41d4-a716-446655440000',
+    op: 'propose-trash' as const,
+    refs,
+    context: 'x'.repeat(1000)
+  };
+
+  assert.doesNotThrow(() => MailboxRequestSchema.parse(request));
+  assert.ok(Buffer.byteLength(`${JSON.stringify(request)}\n`, 'utf8') <= MAX_REQUEST_BYTES);
+});
+
+test('Gmail HTTPS unsubscribe rejects a snapshot from another backend before network access', async () => {
+  const service = new GmailUnsubscribeService({
+    host: 'imap.gmail.com',
+    port: 993,
+    secure: true,
+    auth: { user: 'personal@gmail.com', pass: 'secret' }
+  }, 'personal', 'gmail-personal', 'personal@gmail.com');
+
+  await assert.rejects(() => service.executeHttps({
+    method: 'rfc8058-https-post',
+    backend: 'outlook',
+    provider: 'gmail-personal',
+    profile: 'personal',
+    account: 'personal@gmail.com'
+  } as never), /profile changed/);
 });
 
 test('profiles response exposes the exact outbound provider mapping', async () => {

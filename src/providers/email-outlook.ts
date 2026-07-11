@@ -74,7 +74,10 @@ export class OutlookEmailProvider implements Provider {
         saveToSentItems: true
       })
     });
-    if (!response.ok) throw new Error(statusMessage('Outlook send failed', response.status));
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      throw new Error(statusMessage('Outlook send failed', response.status));
+    }
     return { details: 'Email sent via Outlook / Microsoft Graph' };
   }
 }

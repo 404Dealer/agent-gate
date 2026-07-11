@@ -158,6 +158,36 @@ test('outlook provider refreshes OAuth token and sends a Graph sendMail payload'
   }
 });
 
+test('outlook provider cancels a failed Graph send response body', async () => {
+  let cancelled = false;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    if (String(url).includes('login.microsoftonline.com/common/oauth2/v2.0/token')) {
+      return new Response(JSON.stringify({ access_token: 'access-token' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    return new Response(new ReadableStream({
+      cancel: () => { cancelled = true; }
+    }), { status: 500 });
+  }) as typeof fetch;
+
+  try {
+    const provider = new OutlookEmailProvider({
+      type: 'email-outlook',
+      clientId: 'client-id',
+      refreshToken: 'refresh-token',
+      tenantId: 'common',
+      fromAddress: 'sender@outlook.com'
+    });
+    await assert.rejects(() => provider.send(sampleDraft()), /Outlook send failed/);
+    assert.equal(cancelled, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('mailbox-enabled Outlook provider rejects a present scope response missing Mail.ReadWrite', async () => {
   let graphCalls = 0;
   const originalFetch = globalThis.fetch;
