@@ -4,7 +4,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-22%2B-green.svg)](https://nodejs.org/)
 
-Credential-isolated approval layer between AI agents and external actions, with bounded Gmail triage and Telegram-approved send, Trash, and unsubscribe operations.
+Credential-isolated approval layer between AI agents and external actions, with bounded multi-account Gmail/Outlook triage and Telegram-approved send, Trash, and unsubscribe operations.
 
 **Agents propose. Humans approve. Scripts execute.** No AI in the execution path.
 
@@ -44,7 +44,7 @@ agent-gate is only a **hard security boundary** when these requirements are true
 | The agent has write-only access to the inbox | The agent can propose drafts but cannot list, read, edit, delete, or replace drafts after submission |
 | Send credentials live only in agent-gate | If the agent also has SMTP/Gmail/Zoho send credentials, it can bypass the gate |
 | The approval bot token is not available to the agent | Prevents the agent from approving its own drafts |
-| Gmail access is exposed only through the bounded Unix-socket broker | Keeps the App Password and arbitrary IMAP commands outside the agent process |
+| Gmail/Outlook mailbox access is exposed only through the bounded Unix-socket broker | Keeps Gmail App Passwords, Outlook OAuth tokens, arbitrary IMAP commands, and unrestricted Graph calls outside the agent process |
 | `security.enforceProductionPermissions: true` in production | Fails closed if the write-only inbox/private state directories are misconfigured |
 | Humans review the actual outbound payload | The approval decision is about the concrete email/webhook body, recipients, provider, and context |
 
@@ -283,19 +283,21 @@ sudo /opt/agent-gate/scripts/mailbox-cleanup.sh gmail
 
 The helper previews counts, requires the exact phrase `MARK READ`, and adds only `\Seen` to the snapshotted unread UIDs. It never deletes, moves, empties, or displays messages. See **[docs/mailbox-cleanup.md](docs/mailbox-cleanup.md)** for UID snapshot semantics, auditing, partial outcomes, and troubleshooting.
 
-### Bounded Gmail INBOX broker for Hermes
+### Bounded Gmail and Outlook Inbox profiles for Hermes
 
-The production installer exposes a fixed Unix-socket client without giving Hermes the Gmail App Password or arbitrary IMAP access:
+The production installer exposes one fixed Unix-socket client without giving Hermes Gmail App Passwords, Microsoft refresh tokens, arbitrary IMAP, or arbitrary Graph access:
 
 ```bash
-/usr/local/bin/agent-gate-mailbox list --unread --limit 20
+/usr/local/bin/agent-gate-mailbox profiles
+/usr/local/bin/agent-gate-mailbox list --profile personal --unread --limit 20
+/usr/local/bin/agent-gate-mailbox list --profile work --unread --limit 20
 /usr/local/bin/agent-gate-mailbox read MESSAGE_REF
 /usr/local/bin/agent-gate-mailbox mark-read MESSAGE_REF [MESSAGE_REF ...]
 /usr/local/bin/agent-gate-mailbox propose-trash MESSAGE_REF [MESSAGE_REF ...] --context 'Why these messages are unwanted'
 /usr/local/bin/agent-gate-mailbox propose-unsubscribe MESSAGE_REF --context 'Why this subscription should stop'
 ```
 
-`list` and `read` are bounded to Gmail INBOX and use opaque `UIDVALIDITY + UID` references. `read` uses peek semantics and does not mark mail read. `mark-read` can add only `\Seen` to at most 20 exact references. Trash moves and unsubscribe requests require hash-bound Telegram approval.
+Each named profile points to one Gmail SMTP/App Password provider or one Outlook provider. With one configured profile, `list` may omit `--profile`; with multiple profiles it must select one explicitly. Returned opaque references bind the profile and backend, so `read`, `mark-read`, Trash, and unsubscribe route back to the same account. Gmail references bind `UIDVALIDITY + UID`; Outlook references use Graph immutable message IDs. Legacy Gmail v1 references remain bound only to the unique `gmail-smtp` compatibility provider, whether that provider is exposed as implicit `default` or explicitly named; all other named Gmail providers reject them. Reading does not mark mail read. Mark-read affects at most 20 exact references. Mixed-profile bulk requests fail closed. Trash moves and unsubscribe requests require hash-bound Telegram approval.
 
 Unsubscribe uses only authoritative `List-Unsubscribe` headers: RFC 8058 HTTPS one-click is preferred, with a strict RFC 2369 unsubscribe email fallback. It never follows links from the message body. HTTPS redirects, cookies, private-network targets, and caller-supplied URLs are unavailable. Permanent deletion and EXPUNGE remain unavailable.
 
@@ -309,6 +311,7 @@ sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
 # Then authorize one email provider:
 sudo /opt/agent-gate/scripts/oauth-setup.sh gmail
 sudo /opt/agent-gate/scripts/oauth-setup.sh outlook
+sudo /opt/agent-gate/scripts/oauth-setup.sh outlook --profile work  # bounded Inbox + send
 sudo /opt/agent-gate/scripts/oauth-setup.sh zoho
 ```
 
@@ -365,6 +368,7 @@ Sends email via [Microsoft Graph sendMail](https://learn.microsoft.com/en-us/gra
 | `userId` | Optional mailbox/user id; omitted uses `/me/sendMail` |
 | `fromAddress` | Enforced sender address shown in approval preview |
 | `displayName` | Optional display name shown in approval preview |
+| `mailboxAccess` | Set by named Outlook mailbox onboarding; requires delegated `Mail.ReadWrite` and enables only the bounded Inbox adapter |
 
 ### `email-zoho`
 
@@ -491,8 +495,8 @@ agent-gate/
 - ✅ From-address enforcement in execution and approval preview
 - ✅ Safe long-body preview policy (truncated drafts deny-only by default)
 - ✅ Optional production permission checks at startup
-- ✅ Credential-isolated Gmail INBOX list/read/mark-read broker for Hermes
-- ✅ Telegram-approved Gmail Trash moves with no permanent-delete path
+- ✅ Credential-isolated named Gmail/Outlook Inbox list/read/mark-read broker for Hermes
+- ✅ Telegram-approved Gmail Trash and Outlook Deleted Items moves with no permanent-delete path
 - ✅ Standards-based HTTPS/mailto unsubscribe with no body-link execution
 
 ### Planned

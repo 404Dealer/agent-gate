@@ -12,7 +12,8 @@ export interface UnsubscribeProposalResult {
 export async function submitUnsubscribeProposal(
   inboxDirectory: string,
   ref: string,
-  context: string
+  context: string,
+  provider = 'gmail-smtp'
 ): Promise<UnsubscribeProposalResult> {
   decodeInboxReference(ref);
   const proposalId = randomUUID();
@@ -24,7 +25,7 @@ export async function submitUnsubscribeProposal(
     createdAt: now,
     updatedAt: now,
     source: 'hermes-agent-mailbox-broker',
-    provider: 'gmail-smtp',
+    provider,
     payload: { ref },
     metadata: {
       context,

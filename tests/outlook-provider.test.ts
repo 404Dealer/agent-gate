@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadConfig } from '../src/config.js';
 import { OutlookEmailProvider } from '../src/providers/email-outlook.js';
+import { OutlookTokenClient } from '../src/providers/outlook-token-client.js';
 import type { Draft } from '../src/schema.js';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -155,6 +156,81 @@ test('outlook provider refreshes OAuth token and sends a Graph sendMail payload'
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('outlook provider cancels a failed Graph send response body', async () => {
+  let cancelled = false;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    if (String(url).includes('login.microsoftonline.com/common/oauth2/v2.0/token')) {
+      return new Response(JSON.stringify({ access_token: 'access-token' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    return new Response(new ReadableStream({
+      cancel: () => { cancelled = true; }
+    }), { status: 500 });
+  }) as typeof fetch;
+
+  try {
+    const provider = new OutlookEmailProvider({
+      type: 'email-outlook',
+      clientId: 'client-id',
+      refreshToken: 'refresh-token',
+      tenantId: 'common',
+      fromAddress: 'sender@outlook.com'
+    });
+    await assert.rejects(() => provider.send(sampleDraft()), /Outlook send failed/);
+    assert.equal(cancelled, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('mailbox-enabled Outlook provider rejects a present scope response missing Mail.ReadWrite', async () => {
+  let graphCalls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    if (String(url).includes('login.microsoftonline.com/common/oauth2/v2.0/token')) {
+      return new Response(JSON.stringify({ access_token: 'access-token', scope: 'Mail.Send' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    graphCalls += 1;
+    return new Response('', { status: 202 });
+  }) as typeof fetch;
+
+  try {
+    const provider = new OutlookEmailProvider({
+      type: 'email-outlook',
+      clientId: 'client-id',
+      refreshToken: 'refresh-token',
+      tenantId: 'common',
+      fromAddress: 'sender@outlook.com',
+      mailboxAccess: true
+    });
+    await assert.rejects(() => provider.send(sampleDraft()), /missing a required scope/);
+    assert.equal(graphCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Outlook token client structurally rejects permanent DELETE', async () => {
+  const client = new OutlookTokenClient({
+    type: 'email-outlook',
+    clientId: 'client-id',
+    refreshToken: 'refresh-token',
+    tenantId: 'common',
+    fromAddress: 'sender@outlook.com',
+    mailboxAccess: true
+  });
+  await assert.rejects(
+    () => client.request('https://graph.microsoft.com/v1.0/me/messages/id', { method: 'DELETE' }),
+    /permanent deletion is not available/
+  );
 });
 
 test('outlook provider persists and reuses rotated refresh tokens', async () => {
@@ -346,7 +422,7 @@ test('outlook provider redacts malformed token responses', async () => {
     });
     await assert.rejects(() => provider.send(sampleDraft()), (error: unknown) => {
       assert(error instanceof Error);
-      assert.match(error.message, /invalid JSON/);
+      assert.match(error.message, /invalid response/);
       assert.doesNotMatch(error.message, /super-secret/);
       return true;
     });

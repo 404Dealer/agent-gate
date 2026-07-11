@@ -54,12 +54,21 @@ Do not paste it into Telegram, Hermes, shell arguments, environment variables, i
 sudo /opt/agent-gate/scripts/smtp-setup.sh gmail
 ```
 
+To create separate named mailbox profiles, run the helper once per Gmail account:
+
+```bash
+sudo /opt/agent-gate/scripts/smtp-setup.sh gmail --profile personal
+sudo /opt/agent-gate/scripts/smtp-setup.sh gmail --profile business
+```
+
+Each profiled run authenticates a separate account and atomically writes a `gmail-<profile>` provider plus `mailboxProfiles.<profile>`. Profile names start with a lowercase letter and contain only lowercase letters, digits, or hyphens (maximum 32 characters).
+
 The helper prompts for:
 
 - Gmail address;
 - optional sender display name;
 - Google App Password in a hidden TTY prompt; and
-- whether `gmail-smtp` should become the default provider.
+- whether the configured provider should become the default outbound provider (the unprofiled compatibility flow uses `gmail-smtp`; a named run uses `gmail-<profile>`).
 
 The wrapper then:
 
@@ -89,6 +98,14 @@ providers:
     password: "${PASS:agent-gate/smtp-password-<version>}"
     fromAddress: you@gmail.com
     displayName: Your Name
+```
+
+With `--profile personal`, the provider is named `gmail-personal` and the same atomic update also writes:
+
+```yaml
+mailboxProfiles:
+  personal:
+    provider: gmail-personal
 ```
 
 `fromAddress` is trusted provider configuration. A draft's optional `from` field is ignored in both the approval preview and SMTP send.
@@ -145,7 +162,7 @@ To remove Gmail SMTP capability:
 
 1. Open [Google App Passwords](https://myaccount.google.com/apppasswords).
 2. Delete the `agent-gate` App Password.
-3. Remove or disable the `gmail-smtp` provider in private agent-gate config.
+3. Remove or disable the corresponding provider (`gmail-smtp` for the compatibility account or `gmail-<profile>` for a named account) and remove its `mailboxProfiles.<profile>` binding, if present, from private agent-gate config.
 4. Restart `agent-gate.service`.
 
 Google also revokes App Passwords after a Google Account password change.

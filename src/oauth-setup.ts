@@ -16,7 +16,7 @@ import { PassSecretStore } from './oauth/secret-store.js';
 import { parseSelection, sanitizeTerminalText } from './oauth/selection.js';
 import { buildZohoAuthorizationUrl, exchangeZohoAuthorizationCode, fetchZohoSenderChoices, parseZohoRegion, validateZohoCallbackRegion } from './oauth/zoho.js';
 
-const usage = (): string => `Usage: agent-gate-oauth <gmail|outlook|zoho> [--config PATH] [--port PORT] [--device-code]
+const usage = (): string => `Usage: agent-gate-oauth <gmail|outlook|zoho> [--profile NAME] [--config PATH] [--port PORT] [--device-code]
 
 Browser authorization with PKCE is the default. --device-code is an Outlook-only fallback.
 Run this only through scripts/oauth-setup.sh from a human-controlled SSH/local terminal.
@@ -103,11 +103,15 @@ async function setupOutlook(options: OAuthSetupOptions, store: PassSecretStore):
   const clientId = await promptText('Microsoft Entra application (client) ID');
   if (!clientId) throw new Error('Microsoft client ID is required');
   const tenantId = await promptText('Tenant ID (common supports personal/multi-tenant accounts)', 'common');
+  const mailboxAccess = Boolean(options.profile);
+  if (mailboxAccess) {
+    console.log(`Mailbox profile ${options.profile} will request delegated Mail.ReadWrite access.`);
+  }
 
   let tokens: { accessToken: string; refreshToken: string };
   if (options.deviceCode) {
     console.log('\nWARNING: device authorization is a higher-risk fallback and may be blocked by Conditional Access.');
-    const authorization = await requestOutlookDeviceCode({ clientId, tenantId });
+    const authorization = await requestOutlookDeviceCode({ clientId, tenantId, mailboxAccess });
     console.log('\nOpen this Microsoft URL in any browser:');
     console.log(authorization.verificationUri);
     console.log('\nEnter this short-lived code:');
@@ -119,7 +123,8 @@ async function setupOutlook(options: OAuthSetupOptions, store: PassSecretStore):
       tenantId,
       deviceCode: authorization.deviceCode,
       expiresIn: authorization.expiresIn,
-      interval: authorization.interval
+      interval: authorization.interval,
+      mailboxAccess
     });
   } else {
     const state = randomBytes(32).toString('base64url');
@@ -137,7 +142,8 @@ async function setupOutlook(options: OAuthSetupOptions, store: PassSecretStore):
         tenantId,
         redirectUri: listener.redirectUri,
         state,
-        codeChallenge: pkce.challenge
+        codeChallenge: pkce.challenge,
+        mailboxAccess
       });
       console.log(`\nRegister/use this exact Mobile/Desktop callback URI: ${listener.redirectUri}`);
       console.log(`Ensure SSH forwards local localhost:${options.port} to remote 127.0.0.1:${options.port}.`);
@@ -150,7 +156,8 @@ async function setupOutlook(options: OAuthSetupOptions, store: PassSecretStore):
         tenantId,
         code: callback.code,
         codeVerifier: pkce.verifier,
-        redirectUri: listener.redirectUri
+        redirectUri: listener.redirectUri,
+        mailboxAccess
       });
     } finally {
       await listener.close();
@@ -168,7 +175,10 @@ async function setupOutlook(options: OAuthSetupOptions, store: PassSecretStore):
     tenantId,
     email: identity.email,
     displayName: identity.displayName,
-    setAsDefault
+    setAsDefault,
+    providerName: options.profile ? `outlook-${options.profile}` : 'outlook',
+    mailboxProfileName: options.profile,
+    mailboxAccess
   });
   console.log(`\nOutlook onboarding complete for ${identity.email}. No token value was printed.`);
 }

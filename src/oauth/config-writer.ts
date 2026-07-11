@@ -47,18 +47,29 @@ export function validateProviderName(providerName: string): void {
   }
 }
 
+export function validateMailboxProfileName(profileName: string): void {
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(profileName)) {
+    throw new Error('Invalid mailbox profile name');
+  }
+}
+
 export async function updateProviderConfig(
   configPath: string,
   providerName: string,
   providerConfig: Record<string, unknown>,
-  setAsDefault: boolean
+  setAsDefault: boolean,
+  mailboxProfileName?: string
 ): Promise<void> {
   validateProviderName(providerName);
+  if (mailboxProfileName) validateMailboxProfileName(mailboxProfileName);
 
   const document = await loadPrivateConfigDocument(configPath);
   document.setIn(['providers', providerName], providerConfig);
   if (setAsDefault) {
     document.setIn(['defaults', 'provider'], providerName);
+  }
+  if (mailboxProfileName) {
+    document.setIn(['mailboxProfiles', mailboxProfileName], { provider: providerName });
   }
 
   const directoryPath = dirname(configPath);

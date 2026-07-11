@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { buildGmailImapOptions } from '../mailbox/gmail-imap.js';
 import type { MailboxUnsubscribeDraft } from '../schema.js';
 import type { BrokerCredentials } from './gmail-inbox.js';
-import { decodeInboxReference } from './reference.js';
+import { decodeGmailInboxReference } from './reference.js';
 
 const MAX_HEADER_BYTES = 16 * 1024;
 const ONE_CLICK_BODY = 'List-Unsubscribe=One-Click';
@@ -15,11 +15,14 @@ const EMAIL = z.string().email().max(320);
 class SafeUnsubscribeError extends Error {}
 
 interface UnsubscribeCommon {
-  provider: 'gmail-smtp';
+  backend: 'gmail' | 'outlook';
+  provider: string;
+  profile: string;
   account: string;
-  sourcePath: 'INBOX';
-  uidValidity: string;
-  uid: number;
+  sourcePath: 'INBOX' | 'Inbox';
+  uidValidity?: string;
+  uid?: number;
+  messageId?: string;
   from: string;
   subjectLine: string;
   receivedAt: string | null;
@@ -218,7 +221,12 @@ const isPublicIpv4 = (address: string): boolean => {
 };
 
 export class GmailUnsubscribeService {
-  constructor(private readonly credentials: BrokerCredentials) {}
+  constructor(
+    private readonly credentials: BrokerCredentials,
+    private readonly profile = 'default',
+    private readonly providerName = 'gmail-smtp',
+    private readonly address = credentials.username
+  ) {}
 
   private async withClient<T>(operation: (client: ImapFlow) => Promise<T>): Promise<T> {
     const client = new ImapFlow(buildGmailImapOptions(this.credentials));
@@ -240,14 +248,21 @@ export class GmailUnsubscribeService {
   }
 
   async prepare(draft: MailboxUnsubscribeDraft): Promise<MailboxUnsubscribeSnapshot> {
-    if (draft.provider !== 'gmail-smtp') {
+    if (draft.provider !== this.providerName) {
       throw new SafeUnsubscribeError('Unsubscribe is unsupported for this message');
     }
     return this.prepareReference(draft.payload.ref);
   }
 
+  private assertProfile(reference: ReturnType<typeof decodeGmailInboxReference>): void {
+    if (reference.v === 2 ? reference.profile !== this.profile : this.providerName !== 'gmail-smtp') {
+      throw new SafeUnsubscribeError('Mailbox reference belongs to a different profile');
+    }
+  }
+
   async prepareReference(encodedReference: string): Promise<MailboxUnsubscribeSnapshot> {
-    const reference = decodeInboxReference(encodedReference);
+    const reference = decodeGmailInboxReference(encodedReference);
+    this.assertProfile(reference);
     return this.withClient(async (client) => {
       const lock = await client.getMailboxLock('INBOX', { readOnly: true, acquireTimeout: 10_000 });
       try {
@@ -272,8 +287,10 @@ export class GmailUnsubscribeService {
         }
         const selected = selectUnsubscribeMethod(message.headers);
         const common: UnsubscribeCommon = {
-          provider: 'gmail-smtp',
-          account: cleanLine(this.credentials.username, 320),
+          backend: 'gmail',
+          provider: this.providerName,
+          profile: this.profile,
+          account: cleanLine(this.address, 320),
           sourcePath: 'INBOX',
           uidValidity: reference.uidValidity,
           uid: reference.uid,
@@ -289,89 +306,103 @@ export class GmailUnsubscribeService {
   }
 
   async executeHttps(snapshot: Extract<MailboxUnsubscribeSnapshot, { method: 'rfc8058-https-post' }>): Promise<MailboxUnsubscribeResult> {
-    const endpoint = strictHttpsUrl(snapshot.endpointUrl);
-    if (endpoint.hostname.toLowerCase() !== snapshot.endpointHost) {
-      throw new Error('Approved unsubscribe destination changed');
+    if (
+      snapshot.backend !== 'gmail' ||
+      snapshot.provider !== this.providerName ||
+      snapshot.profile !== this.profile ||
+      snapshot.account !== cleanLine(this.address, 320)
+    ) {
+      throw new Error('Approved unsubscribe profile changed');
     }
+    return executeHttpsUnsubscribe(snapshot);
+  }
+}
 
-    let addresses: string[];
+export async function executeHttpsUnsubscribe(
+  snapshot: Extract<MailboxUnsubscribeSnapshot, { method: 'rfc8058-https-post' }>
+): Promise<MailboxUnsubscribeResult> {
+  const endpoint = strictHttpsUrl(snapshot.endpointUrl);
+  if (endpoint.hostname.toLowerCase() !== snapshot.endpointHost) {
+    throw new Error('Approved unsubscribe destination changed');
+  }
+
+  let addresses: string[];
+  try {
+    addresses = await resolve4(snapshot.endpointHost);
+  } catch {
+    throw new Error('Unsubscribe destination could not be resolved');
+  }
+  if (addresses.length === 0 || addresses.some((address) => !isPublicIpv4(address))) {
+    throw new Error('Unsubscribe destination is not a public HTTPS service');
+  }
+  const pinnedAddress = addresses[0];
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let requestStarted = false;
+    const finish = (result: MailboxUnsubscribeResult): void => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
     try {
-      addresses = await resolve4(snapshot.endpointHost);
-    } catch {
-      throw new Error('Unsubscribe destination could not be resolved');
-    }
-    if (addresses.length === 0 || addresses.some((address) => !isPublicIpv4(address))) {
-      throw new Error('Unsubscribe destination is not a public HTTPS service');
-    }
-    const pinnedAddress = addresses[0];
-
-    return new Promise((resolve) => {
-      let settled = false;
-      let requestStarted = false;
-      const finish = (result: MailboxUnsubscribeResult): void => {
-        if (settled) return;
-        settled = true;
-        resolve(result);
-      };
-      try {
-        const request = httpsRequest({
-          hostname: pinnedAddress,
-          servername: snapshot.endpointHost,
-          port: 443,
-          path: `${endpoint.pathname}${endpoint.search}`,
-          method: 'POST',
-          rejectUnauthorized: true,
-          headers: {
-            Host: snapshot.endpointHost,
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Content-Length': Buffer.byteLength(ONE_CLICK_BODY),
-            'User-Agent': 'agent-gate/0.1 unsubscribe'
-          }
-        }, (response) => {
-          const status = response.statusCode ?? 0;
-          response.destroy();
-          if (status >= 200 && status < 300) {
-            finish({
-              outcome: 'unsubscribe-accepted',
+      const request = httpsRequest({
+        hostname: pinnedAddress,
+        servername: snapshot.endpointHost,
+        port: 443,
+        path: `${endpoint.pathname}${endpoint.search}`,
+        method: 'POST',
+        rejectUnauthorized: true,
+        headers: {
+          Host: snapshot.endpointHost,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Length': Buffer.byteLength(ONE_CLICK_BODY),
+          'User-Agent': 'agent-gate/0.1 unsubscribe'
+        }
+      }, (response) => {
+        const status = response.statusCode ?? 0;
+        response.destroy();
+        if (status >= 200 && status < 300) {
+          finish({
+            outcome: 'unsubscribe-accepted',
+            method: 'https',
+            destination: snapshot.endpointHost,
+            details: 'The standards-based HTTPS unsubscribe request was accepted'
+          });
+        } else {
+          finish({
+            outcome: 'unsubscribe-rejected',
+            method: 'https',
+            destination: snapshot.endpointHost,
+            details: `The unsubscribe service rejected the request with HTTP ${status || 'unknown'}`
+          });
+        }
+      });
+      request.setTimeout(10_000, () => request.destroy(new Error('timeout')));
+      request.once('error', () => {
+        finish(requestStarted
+          ? {
+              outcome: 'unsubscribe-ambiguous',
               method: 'https',
               destination: snapshot.endpointHost,
-              details: 'The standards-based HTTPS unsubscribe request was accepted'
-            });
-          } else {
-            finish({
+              details: 'The HTTPS unsubscribe outcome could not be confirmed; do not retry automatically'
+            }
+          : {
               outcome: 'unsubscribe-rejected',
               method: 'https',
               destination: snapshot.endpointHost,
-              details: `The unsubscribe service rejected the request with HTTP ${status || 'unknown'}`
+              details: 'The HTTPS unsubscribe request could not be started'
             });
-          }
-        });
-        request.setTimeout(10_000, () => request.destroy(new Error('timeout')));
-        request.once('error', () => {
-          finish(requestStarted
-            ? {
-                outcome: 'unsubscribe-ambiguous',
-                method: 'https',
-                destination: snapshot.endpointHost,
-                details: 'The HTTPS unsubscribe outcome could not be confirmed; do not retry automatically'
-              }
-            : {
-                outcome: 'unsubscribe-rejected',
-                method: 'https',
-                destination: snapshot.endpointHost,
-                details: 'The HTTPS unsubscribe request could not be started'
-              });
-        });
-        requestStarted = true;
-        request.end(ONE_CLICK_BODY);
-      } catch {
-        finish({
-          outcome: 'unsubscribe-rejected',
-          method: 'https',
-          destination: snapshot.endpointHost,
-          details: 'The HTTPS unsubscribe request could not be started'
-        });
-      }
-    });
-  }
+      });
+      requestStarted = true;
+      request.end(ONE_CLICK_BODY);
+    } catch {
+      finish({
+        outcome: 'unsubscribe-rejected',
+        method: 'https',
+        destination: snapshot.endpointHost,
+        details: 'The HTTPS unsubscribe request could not be started'
+      });
+    }
+  });
 }

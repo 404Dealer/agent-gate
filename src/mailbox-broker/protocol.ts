@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { decodeInboxReference, decodeUniqueInboxReferences } from './reference.js';
 
 export const MAILBOX_SOCKET_PATH = '/run/agent-gate-mailbox/broker.sock';
-export const MAX_REQUEST_BYTES = 16 * 1024;
+export const MAX_REQUEST_BYTES = 96 * 1024;
 export const MAX_RESPONSE_BYTES = 1024 * 1024;
 
 const RequestBase = z.object({
@@ -10,7 +10,7 @@ const RequestBase = z.object({
   id: z.string().uuid()
 });
 
-const MessageRefSchema = z.string().min(8).max(256).regex(/^[A-Za-z0-9_-]+$/).refine((value) => {
+const MessageRefSchema = z.string().min(8).max(4096).regex(/^[A-Za-z0-9_-]+$/).refine((value) => {
   try {
     decodeInboxReference(value);
     return true;
@@ -29,7 +29,11 @@ const UniqueMessageRefsSchema = z.array(MessageRefSchema).min(1).max(20).superRe
 
 export const MailboxRequestSchema = z.discriminatedUnion('op', [
   RequestBase.extend({
+    op: z.literal('profiles')
+  }).strict(),
+  RequestBase.extend({
     op: z.literal('list'),
+    profile: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/).optional(),
     unread: z.boolean().default(false),
     limit: z.number().int().min(1).max(50).default(20)
   }).strict(),

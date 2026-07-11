@@ -1,7 +1,6 @@
 import { appendFile, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 import type { AgentGateConfig } from './config.js';
-import { credentialsFromConfig } from './mailbox-broker/gmail-inbox.js';
 import {
   GmailMailboxTrashService,
   type MailboxTrashResult,
@@ -12,6 +11,9 @@ import {
   type MailboxUnsubscribeResult,
   type MailboxUnsubscribeSnapshot
 } from './mailbox-broker/gmail-unsubscribe.js';
+import { mailboxProfilesFromConfig } from './mailbox-broker/profiles.js';
+import { OutlookMailboxAdapter } from './mailbox-broker/outlook-mailbox.js';
+import { getSharedOutlookTokenClient } from './providers/outlook-token-client.js';
 import {
   DraftSchema,
   updateStatus,
@@ -62,8 +64,8 @@ export interface MailboxUnsubscribeExecutor {
 
 export class Executor {
   private readonly providers: Record<string, Provider>;
-  private readonly mailboxTrash: MailboxTrashExecutor | null;
-  private readonly mailboxUnsubscribe: MailboxUnsubscribeExecutor | null;
+  private readonly mailboxTrash: ReadonlyMap<string, MailboxTrashExecutor>;
+  private readonly mailboxUnsubscribe: ReadonlyMap<string, MailboxUnsubscribeExecutor>;
 
   constructor(
     private readonly config: AgentGateConfig,
@@ -75,17 +77,46 @@ export class Executor {
     this.providers = providerOverrides ?? Object.fromEntries(
       Object.entries(config.providers).map(([name, providerConfig]) => [name, createProvider(providerConfig)])
     );
-    const credentials = credentialsFromConfig(config);
-    if (mailboxTrashOverride !== undefined) {
-      this.mailboxTrash = mailboxTrashOverride;
-    } else {
-      this.mailboxTrash = credentials ? new GmailMailboxTrashService(credentials) : null;
+    const profiles = mailboxProfilesFromConfig(config);
+    const trashExecutors = new Map<string, MailboxTrashExecutor>();
+    const unsubscribeExecutors = new Map<string, MailboxUnsubscribeExecutor>();
+    for (const profile of profiles.values()) {
+      if (profile.backend === 'gmail') {
+        trashExecutors.set(profile.providerName, new GmailMailboxTrashService(
+          profile.credentials,
+          profile.name,
+          profile.providerName,
+          profile.address
+        ));
+        unsubscribeExecutors.set(profile.providerName, new GmailUnsubscribeService(
+          profile.credentials,
+          profile.name,
+          profile.providerName,
+          profile.address
+        ));
+      } else {
+        const adapter = new OutlookMailboxAdapter(
+          profile.name,
+          profile.providerName,
+          profile.providerConfig,
+          getSharedOutlookTokenClient(profile.providerConfig)
+        );
+        trashExecutors.set(profile.providerName, {
+          prepare: (draft) => adapter.prepareTrash(draft),
+          execute: (snapshot) => adapter.executeTrash(snapshot)
+        });
+        unsubscribeExecutors.set(profile.providerName, {
+          prepare: (draft) => adapter.prepareUnsubscribe(draft),
+          executeHttps: (snapshot) => adapter.executeHttps(snapshot)
+        });
+      }
     }
-    if (mailboxUnsubscribeOverride !== undefined) {
-      this.mailboxUnsubscribe = mailboxUnsubscribeOverride;
-    } else {
-      this.mailboxUnsubscribe = credentials ? new GmailUnsubscribeService(credentials) : null;
-    }
+    this.mailboxTrash = mailboxTrashOverride !== undefined
+      ? (mailboxTrashOverride ? new Map([['gmail-smtp', mailboxTrashOverride]]) : new Map())
+      : trashExecutors;
+    this.mailboxUnsubscribe = mailboxUnsubscribeOverride !== undefined
+      ? (mailboxUnsubscribeOverride ? new Map([['gmail-smtp', mailboxUnsubscribeOverride]]) : new Map())
+      : unsubscribeExecutors;
   }
 
   describeProviderSender(providerName: string): string {
@@ -95,13 +126,15 @@ export class Executor {
   }
 
   async prepareMailboxTrash(draft: MailboxTrashDraft): Promise<MailboxTrashSnapshot> {
-    if (!this.mailboxTrash) throw new Error('Mailbox Trash is not configured');
-    return this.mailboxTrash.prepare(draft);
+    const executor = this.mailboxTrash.get(draft.provider);
+    if (!executor) throw new Error('Mailbox Trash is not configured');
+    return executor.prepare(draft);
   }
 
   async prepareMailboxUnsubscribe(draft: MailboxUnsubscribeDraft): Promise<MailboxUnsubscribeSnapshot> {
-    if (!this.mailboxUnsubscribe) throw new Error('Mailbox unsubscribe is not configured');
-    return this.mailboxUnsubscribe.prepare(draft);
+    const executor = this.mailboxUnsubscribe.get(draft.provider);
+    if (!executor) throw new Error('Mailbox unsubscribe is not configured');
+    return executor.prepare(draft);
   }
 
   async executeApprovedDraft(
@@ -116,16 +149,18 @@ export class Executor {
 
     try {
       if (draft.type === 'mailbox-trash') {
-        if (!this.mailboxTrash || !mailboxTrashSnapshot) {
+        const mailboxTrash = this.mailboxTrash.get(draft.provider);
+        if (!mailboxTrash || !mailboxTrashSnapshot || mailboxTrashSnapshot.provider !== draft.provider) {
           throw new Error('Approved mailbox snapshot is unavailable');
         }
-        executionResult = await this.mailboxTrash.execute(mailboxTrashSnapshot);
+        executionResult = await mailboxTrash.execute(mailboxTrashSnapshot);
       } else if (draft.type === 'mailbox-unsubscribe') {
-        if (!this.mailboxUnsubscribe || !mailboxUnsubscribeSnapshot) {
+        const mailboxUnsubscribe = this.mailboxUnsubscribe.get(draft.provider);
+        if (!mailboxUnsubscribe || !mailboxUnsubscribeSnapshot || mailboxUnsubscribeSnapshot.provider !== draft.provider) {
           throw new Error('Approved unsubscribe snapshot is unavailable');
         }
         if (mailboxUnsubscribeSnapshot.method === 'rfc8058-https-post') {
-          executionResult = await this.mailboxUnsubscribe.executeHttps(mailboxUnsubscribeSnapshot);
+          executionResult = await mailboxUnsubscribe.executeHttps(mailboxUnsubscribeSnapshot);
         } else {
           const provider = this.providers[draft.provider];
           if (!provider) throw new Error(`Provider not configured: ${draft.provider}`);
@@ -149,7 +184,7 @@ export class Executor {
               outcome: 'unsubscribe-accepted',
               method: 'mailto',
               destination: mailboxUnsubscribeSnapshot.recipient,
-              details: 'The standards-based unsubscribe email was accepted by SMTP'
+              details: 'The standards-based unsubscribe email was accepted by the configured provider'
             };
           } catch {
             executionResult = {

@@ -2,7 +2,8 @@ import { ImapFlow, type FetchMessageObject } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import type { AgentGateConfig } from '../config.js';
 import { buildGmailImapOptions } from '../mailbox/gmail-imap.js';
-import { decodeInboxReference, encodeInboxReference } from './reference.js';
+import type { MailboxAdapter, MailboxMarkReadResult } from './adapter.js';
+import { decodeGmailInboxReference, encodeInboxReference } from './reference.js';
 
 const MAX_MESSAGE_BYTES = 512 * 1024;
 const MAX_BODY_BYTES = 256 * 1024;
@@ -17,7 +18,8 @@ export interface BrokerCredentials {
 
 export interface InboxListItem {
   ref: string;
-  uid: number;
+  uid?: number;
+  messageId?: string;
   unread: boolean;
   flagged: boolean;
   from: string;
@@ -67,10 +69,12 @@ const dateString = (message: FetchMessageObject): string | null => {
   return value instanceof Date && Number.isFinite(value.getTime()) ? value.toISOString() : null;
 };
 
-const listItem = (message: FetchMessageObject, uidValidity: string): InboxListItem => {
+const listItem = (message: FetchMessageObject, uidValidity: string, profile?: string): InboxListItem => {
   const flags = message.flags ?? new Set<string>();
   return {
-    ref: encodeInboxReference({ uidValidity, uid: message.uid }),
+    ref: profile
+      ? encodeInboxReference({ profile, backend: 'gmail', uidValidity, uid: message.uid })
+      : encodeInboxReference({ uidValidity, uid: message.uid }),
     uid: message.uid,
     unread: !flags.has('\\Seen'),
     flagged: flags.has('\\Flagged'),
@@ -96,8 +100,21 @@ export function credentialsFromConfig(config: AgentGateConfig): BrokerCredential
   return { username: provider.username, password: provider.password };
 }
 
-export class GmailInboxBroker {
-  constructor(private readonly credentials: BrokerCredentials) {}
+export class GmailInboxBroker implements MailboxAdapter {
+  readonly backend = 'gmail' as const;
+
+  constructor(
+    private readonly credentials: BrokerCredentials,
+    readonly profile = 'default',
+    readonly providerName = 'gmail-smtp',
+    readonly address = credentials.username
+  ) {}
+
+  private assertProfile(reference: ReturnType<typeof decodeGmailInboxReference>): void {
+    if (reference.v === 2 ? reference.profile !== this.profile : this.providerName !== 'gmail-smtp') {
+      throw new SafeMailboxError('Mailbox reference belongs to a different profile');
+    }
+  }
 
   private async withClient<T>(operation: (client: ImapFlow) => Promise<T>): Promise<T> {
     const client = new ImapFlow(buildGmailImapOptions(this.credentials));
@@ -142,7 +159,7 @@ export class GmailInboxBroker {
           .filter((message) => !unread || !(message.flags ?? new Set<string>()).has('\\Seen'))
           .sort((a, b) => b.uid - a.uid)
           .slice(0, limit)
-          .map((message) => listItem(message, uidValidity));
+          .map((message) => listItem(message, uidValidity, this.profile));
         return {
           items,
           scannedUidWindow: upper - lower + 1,
@@ -155,7 +172,8 @@ export class GmailInboxBroker {
   }
 
   async read(encodedReference: string): Promise<InboxMessage> {
-    const reference = decodeInboxReference(encodedReference);
+    const reference = decodeGmailInboxReference(encodedReference);
+    this.assertProfile(reference);
     return this.withClient(async (client) => {
       const lock = await client.getMailboxLock('INBOX', { readOnly: true, acquireTimeout: 10_000 });
       try {
@@ -182,7 +200,7 @@ export class GmailInboxBroker {
         const parsed = await simpleParser(fetched.source, { skipImageLinks: true });
         const text = cleanBody(parsed.text);
         return {
-          ...listItem(fetched, reference.uidValidity),
+          ...listItem(fetched, reference.uidValidity, this.profile),
           to: addresses(fetched.envelope?.to),
           cc: addresses(fetched.envelope?.cc),
           text,
@@ -199,12 +217,9 @@ export class GmailInboxBroker {
     });
   }
 
-  async markRead(encodedReferences: string[]): Promise<{
-    outcome: 'applied' | 'partial';
-    requested: number;
-    verified: number;
-  }> {
-    const references = encodedReferences.map(decodeInboxReference);
+  async markRead(encodedReferences: string[]): Promise<MailboxMarkReadResult> {
+    const references = encodedReferences.map(decodeGmailInboxReference);
+    references.forEach((reference) => this.assertProfile(reference));
     const unique = new Map(references.map((reference) => [reference.uid, reference]));
     const exact = [...unique.values()];
     return this.withClient(async (client) => {

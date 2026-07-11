@@ -1,6 +1,7 @@
 export interface SmtpSetupOptions {
   provider: 'gmail';
   configPath: string;
+  profile?: string;
 }
 
 export function parseSmtpSetupArgs(args: string[]): SmtpSetupOptions {
@@ -10,6 +11,7 @@ export function parseSmtpSetupArgs(args: string[]): SmtpSetupOptions {
   }
 
   let configPath = '/opt/agent-gate/config/config.yaml';
+  let profile: string | undefined;
   for (let index = 0; index < rest.length; index += 1) {
     const option = rest[index];
     if (option === '--config') {
@@ -18,8 +20,16 @@ export function parseSmtpSetupArgs(args: string[]): SmtpSetupOptions {
       configPath = value;
       continue;
     }
+    if (option === '--profile') {
+      const value = rest[++index];
+      if (!value || !/^[a-z][a-z0-9-]{0,31}$/.test(value)) {
+        throw new Error('--profile requires a safe profile name');
+      }
+      profile = value;
+      continue;
+    }
     throw new Error(`Unknown option: ${option}`);
   }
 
-  return { provider: 'gmail', configPath };
+  return { provider: 'gmail', configPath, ...(profile ? { profile } : {}) };
 }

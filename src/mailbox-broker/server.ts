@@ -1,7 +1,7 @@
 import { chmod, chown, lstat, unlink } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
 import { dirname } from 'node:path';
-import { GmailInboxBroker } from './gmail-inbox.js';
+import type { MailboxAdapter } from './adapter.js';
 import {
   MAILBOX_SOCKET_PATH,
   MAX_REQUEST_BYTES,
@@ -10,6 +10,7 @@ import {
   type MailboxRequest,
   type MailboxResponse
 } from './protocol.js';
+import { decodeInboxReference, decodeUniqueInboxReferences } from './reference.js';
 
 const FALLBACK_ID = '00000000-0000-4000-8000-000000000000';
 const SAFE_ERRORS = new Set([
@@ -21,7 +22,12 @@ const SAFE_ERRORS = new Set([
   'One or more message references are stale',
   'One or more messages are no longer in INBOX',
   'Gmail mailbox operation failed',
+  'Outlook mailbox operation failed',
   'Mailbox broker is busy',
+  'Mailbox profile is required',
+  'Mailbox profile is not configured',
+  'Mailbox reference belongs to a different profile',
+  'Mailbox references must belong to one profile',
   'Mailbox references must share one current INBOX identity',
   'Duplicate mailbox references are not allowed',
   'Trash proposal is unavailable',
@@ -43,28 +49,95 @@ export class MailboxBrokerServer {
   private readonly maxActiveOperations = 3;
 
   constructor(
-    private readonly broker: GmailInboxBroker,
+    private readonly adapters: ReadonlyMap<string, MailboxAdapter>,
     private readonly socketPath: string,
     private readonly socketGroupGid: number,
-    private readonly proposalWriter?: (refs: readonly string[], context: string) => Promise<unknown>,
-    private readonly unsubscribeProposalWriter?: (ref: string, context: string) => Promise<unknown>
+    private readonly proposalWriter?: (profile: string, refs: readonly string[], context: string) => Promise<unknown>,
+    private readonly unsubscribeProposalWriter?: (profile: string, ref: string, context: string) => Promise<unknown>
   ) {}
+
+  private selectedProfile(requested?: string): string {
+    if (requested) {
+      if (!this.adapters.has(requested)) throw new Error('Mailbox profile is not configured');
+      return requested;
+    }
+    if (this.adapters.size !== 1) throw new Error('Mailbox profile is required');
+    return this.adapters.keys().next().value as string;
+  }
+
+  private legacyGmailProfile(): string {
+    const matches = [...this.adapters.values()].filter((adapter) =>
+      adapter.backend === 'gmail' && adapter.providerName === 'gmail-smtp'
+    );
+    if (matches.length !== 1) throw new Error('Mailbox profile is required');
+    return matches[0].profile;
+  }
+
+  private profileFromReference(encodedReference: string): string {
+    const reference = decodeInboxReference(encodedReference);
+    const profile = reference.v === 2
+      ? this.selectedProfile(reference.profile)
+      : this.legacyGmailProfile();
+    if (reference.v === 2 && this.adapter(profile).backend !== reference.backend) {
+      throw new Error('Mailbox reference belongs to a different profile');
+    }
+    return profile;
+  }
+
+  private profileFromReferences(encodedReferences: readonly string[]): string {
+    const references = decodeUniqueInboxReferences(encodedReferences);
+    const first = references[0];
+    if (!first) throw new Error('Invalid message reference');
+    const profile = first.v === 2
+      ? this.selectedProfile(first.profile)
+      : this.legacyGmailProfile();
+    if (first.v === 2 && this.adapter(profile).backend !== first.backend) {
+      throw new Error('Mailbox reference belongs to a different profile');
+    }
+    return profile;
+  }
+
+  private adapter(profile: string): MailboxAdapter {
+    const adapter = this.adapters.get(profile);
+    if (!adapter) throw new Error('Mailbox profile is not configured');
+    return adapter;
+  }
 
   private async execute(request: MailboxRequest): Promise<unknown> {
     if (this.activeOperations >= this.maxActiveOperations) throw new Error('Mailbox broker is busy');
     this.activeOperations += 1;
     try {
       switch (request.op) {
-        case 'list': return await this.broker.list(request.unread, request.limit);
-        case 'read': return await this.broker.read(request.ref);
-        case 'mark-read': return await this.broker.markRead(request.refs);
+        case 'profiles':
+          return {
+            profiles: [...this.adapters.values()].map((adapter) => ({
+              name: adapter.profile,
+              provider: adapter.providerName,
+              providerType: adapter.backend,
+              address: adapter.address
+            }))
+          };
+        case 'list': {
+          const profile = this.selectedProfile(request.profile);
+          return await this.adapter(profile).list(request.unread, request.limit);
+        }
+        case 'read': {
+          const profile = this.profileFromReference(request.ref);
+          return await this.adapter(profile).read(request.ref);
+        }
+        case 'mark-read': {
+          const profile = this.profileFromReferences(request.refs);
+          return await this.adapter(profile).markRead(request.refs);
+        }
         case 'propose-trash': {
           if (!this.proposalWriter) throw new Error('Trash proposal is unavailable');
-          return await this.proposalWriter(request.refs, request.context);
+          const profile = this.profileFromReferences(request.refs);
+          return await this.proposalWriter(profile, request.refs, request.context);
         }
         case 'propose-unsubscribe': {
           if (!this.unsubscribeProposalWriter) throw new Error('Unsubscribe proposal is unavailable');
-          return await this.unsubscribeProposalWriter(request.ref, request.context);
+          const profile = this.profileFromReference(request.ref);
+          return await this.unsubscribeProposalWriter(profile, request.ref, request.context);
         }
       }
     } finally {
@@ -117,7 +190,9 @@ export class MailboxBrokerServer {
 
   async start(): Promise<void> {
     if (this.server) return;
-    if (dirname(this.socketPath) === this.socketPath) throw new Error('Invalid mailbox socket path');
+    if (this.socketPath !== MAILBOX_SOCKET_PATH || dirname(this.socketPath) === this.socketPath) {
+      throw new Error('Invalid mailbox socket path');
+    }
     try {
       const entry = await lstat(this.socketPath);
       if (!entry.isSocket() || entry.isSymbolicLink()) throw new Error('Unsafe mailbox socket path');
@@ -140,9 +215,7 @@ export class MailboxBrokerServer {
     } finally {
       process.umask(previousUmask);
     }
-    if (this.socketGroupGid !== undefined) {
-      await chown(this.socketPath, process.getuid?.() ?? -1, this.socketGroupGid);
-    }
+    await chown(this.socketPath, process.getuid?.() ?? -1, this.socketGroupGid);
     await chmod(this.socketPath, 0o660);
   }
 

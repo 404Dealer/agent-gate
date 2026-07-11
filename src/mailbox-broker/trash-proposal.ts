@@ -12,7 +12,8 @@ export interface TrashProposalResult {
 export async function submitTrashProposal(
   inboxDirectory: string,
   refs: readonly string[],
-  context: string
+  context: string,
+  provider = 'gmail-smtp'
 ): Promise<TrashProposalResult> {
   decodeUniqueInboxReferences(refs);
 
@@ -25,7 +26,7 @@ export async function submitTrashProposal(
     createdAt: now,
     updatedAt: now,
     source: 'hermes-agent-mailbox-broker',
-    provider: 'gmail-smtp',
+    provider,
     payload: { refs },
     metadata: {
       context,

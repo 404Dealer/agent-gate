@@ -8,7 +8,8 @@ const SOCKET_PATH = '/run/agent-gate-mailbox/broker.sock';
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 
 type ClientRequest =
-  | { v: 1; id: string; op: 'list'; unread: boolean; limit: number }
+  | { v: 1; id: string; op: 'profiles' }
+  | { v: 1; id: string; op: 'list'; profile?: string; unread: boolean; limit: number }
   | { v: 1; id: string; op: 'read'; ref: string }
   | { v: 1; id: string; op: 'mark-read'; refs: string[] }
   | { v: 1; id: string; op: 'propose-trash'; refs: string[]; context: string }
@@ -24,30 +25,58 @@ interface ClientResponse {
 
 const usage = (): string => [
   'Usage:',
-  '  agent-gate-mailbox list [--unread] [--limit 1-50]',
+  '  agent-gate-mailbox profiles',
+  '  agent-gate-mailbox list [--profile PROFILE] [--unread] [--limit 1-50]',
   '  agent-gate-mailbox read MESSAGE_REF',
   '  agent-gate-mailbox mark-read MESSAGE_REF [MESSAGE_REF ...]',
   '  agent-gate-mailbox propose-trash MESSAGE_REF [MESSAGE_REF ...] [--context TEXT]',
   '  agent-gate-mailbox propose-unsubscribe MESSAGE_REF [--context TEXT]',
   '',
-  'Outputs JSON. Gmail credentials remain inside the isolated agent-gate service.'
+  'Outputs JSON. Email credentials remain inside the isolated agent-gate service.'
 ].join('\n');
 
-const refIdentity = (value: string): { uidValidity: string; uid: number } | null => {
-  if (!/^[A-Za-z0-9_-]{8,256}$/.test(value)) return null;
+const refIdentity = (value: string): {
+  profile: string | null;
+  backend: 'gmail' | 'outlook';
+  identity: string;
+  uidValidity?: string;
+} | null => {
+  if (!/^[A-Za-z0-9_-]{8,4096}$/.test(value)) return null;
   try {
     const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as Record<string, unknown>;
     const keys = Object.keys(parsed).sort().join(',');
-    if (keys !== 'folder,uid,uidValidity,v' || parsed.v !== 1 || parsed.folder !== 'inbox' ||
-        typeof parsed.uidValidity !== 'string' || !/^[1-9][0-9]*$/.test(parsed.uidValidity) ||
-        typeof parsed.uid !== 'number' || !Number.isSafeInteger(parsed.uid) || parsed.uid < 1) return null;
-    const canonical = Buffer.from(JSON.stringify({
-      v: 1,
-      folder: 'inbox',
-      uidValidity: parsed.uidValidity,
-      uid: parsed.uid
-    }), 'utf8').toString('base64url');
-    return canonical === value ? { uidValidity: parsed.uidValidity, uid: parsed.uid } : null;
+    const legacy = keys === 'folder,uid,uidValidity,v' && parsed.v === 1;
+    const gmail = keys === 'backend,folder,profile,uid,uidValidity,v' && parsed.v === 2 &&
+      parsed.backend === 'gmail' && typeof parsed.profile === 'string' && /^[a-z][a-z0-9-]{0,31}$/.test(parsed.profile);
+    const outlook = keys === 'backend,folder,messageId,profile,v' && parsed.v === 2 &&
+      parsed.backend === 'outlook' && typeof parsed.profile === 'string' && /^[a-z][a-z0-9-]{0,31}$/.test(parsed.profile) &&
+      typeof parsed.messageId === 'string' && /^[A-Za-z0-9+\/_=-]{1,2048}$/.test(parsed.messageId);
+    if ((!legacy && !gmail && !outlook) || parsed.folder !== 'inbox') return null;
+
+    let canonicalValue: Record<string, unknown>;
+    let identity: string;
+    let uidValidity: string | undefined;
+    if (outlook) {
+      canonicalValue = { v: 2, profile: parsed.profile, backend: 'outlook', folder: 'inbox', messageId: parsed.messageId };
+      identity = `outlook:${parsed.messageId as string}`;
+    } else {
+      if (typeof parsed.uidValidity !== 'string' || !/^[1-9][0-9]*$/.test(parsed.uidValidity) ||
+          typeof parsed.uid !== 'number' || !Number.isSafeInteger(parsed.uid) || parsed.uid < 1) return null;
+      canonicalValue = gmail
+        ? { v: 2, profile: parsed.profile, backend: 'gmail', folder: 'inbox', uidValidity: parsed.uidValidity, uid: parsed.uid }
+        : { v: 1, folder: 'inbox', uidValidity: parsed.uidValidity, uid: parsed.uid };
+      uidValidity = parsed.uidValidity;
+      identity = `gmail:${parsed.uidValidity}:${parsed.uid}`;
+    }
+    const canonical = Buffer.from(JSON.stringify(canonicalValue), 'utf8').toString('base64url');
+    return canonical === value
+      ? {
+          profile: legacy ? null : parsed.profile as string,
+          backend: outlook ? 'outlook' : 'gmail',
+          identity,
+          ...(uidValidity ? { uidValidity } : {})
+        }
+      : null;
   } catch {
     return null;
   }
@@ -59,12 +88,19 @@ export function parseMailboxClientArgs(argv: string[]): ClientRequest | 'help' {
   if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) return 'help';
   const id = randomUUID();
   const command = argv[0];
+  if (command === 'profiles' && argv.length === 1) return { v: 1, id, op: 'profiles' };
   if (command === 'list') {
     let unread = false;
     let limit = 20;
+    let profile: string | undefined;
     for (let index = 1; index < argv.length; index += 1) {
       if (argv[index] === '--unread') {
         unread = true;
+      } else if (argv[index] === '--profile' && index + 1 < argv.length) {
+        const value = argv[index + 1];
+        if (!/^[a-z][a-z0-9-]{0,31}$/.test(value)) throw new Error('Invalid mailbox command');
+        profile = value;
+        index += 1;
       } else if (argv[index] === '--limit' && index + 1 < argv.length) {
         const value = argv[index + 1];
         if (!/^[0-9]+$/.test(value)) throw new Error('Invalid mailbox command');
@@ -75,7 +111,7 @@ export function parseMailboxClientArgs(argv: string[]): ClientRequest | 'help' {
       }
     }
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new Error('Invalid mailbox command');
-    return { v: 1, id, op: 'list', unread, limit };
+    return { v: 1, id, op: 'list', profile, unread, limit };
   }
   if (command === 'read' && argv.length === 2 && validRef(argv[1])) {
     return { v: 1, id, op: 'read', ref: argv[1] };
@@ -90,10 +126,16 @@ export function parseMailboxClientArgs(argv: string[]): ClientRequest | 'help' {
     const refs = argv.slice(1, hasContext ? contextIndex : argv.length);
     const context = hasContext ? argv[contextIndex + 1] : 'User requested these exact INBOX messages be moved to Trash';
     const decoded = refs.map(refIdentity);
-    const firstUidValidity = decoded[0]?.uidValidity;
-    const semanticIdentities = decoded.map((ref) => ref ? `${ref.uidValidity}:${ref.uid}` : 'invalid');
-    if (refs.length < 1 || refs.length > 20 || decoded.some((ref) => !ref) || !firstUidValidity ||
-        decoded.some((ref) => ref?.uidValidity !== firstUidValidity) ||
+    const first = decoded[0];
+    const semanticIdentities = decoded.map((ref) => ref?.identity ?? 'invalid');
+    const mismatchedIdentity = decoded.some((ref) =>
+      !ref ||
+      !first ||
+      ref.profile !== first.profile ||
+      ref.backend !== first.backend ||
+      (first.backend === 'gmail' && ref.uidValidity !== first.uidValidity)
+    );
+    if (refs.length < 1 || refs.length > 20 || !first || mismatchedIdentity ||
         new Set(semanticIdentities).size !== refs.length || context.length > 1000) {
       throw new Error('Invalid mailbox command');
     }

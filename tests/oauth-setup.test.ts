@@ -48,6 +48,14 @@ test('OAuth setup CLI accepts only non-secret options and makes device code Outl
     port: 8765,
     deviceCode: true
   });
+  assert.deepEqual(parseOAuthSetupArgs(['outlook', '--profile', 'work']), {
+    provider: 'outlook',
+    configPath: '/opt/agent-gate/config/config.yaml',
+    port: 8765,
+    deviceCode: false,
+    profile: 'work'
+  });
+  assert.throws(() => parseOAuthSetupArgs(['gmail', '--profile', 'personal']), /only valid for outlook/);
   assert.throws(
     () => parseOAuthSetupArgs(['gmail', '--client-secret', 'must-not-enter-argv']),
     /Unknown option/
@@ -250,6 +258,15 @@ test('Outlook authorization URL uses a public-client loopback redirect, PKCE, an
   assert.equal(url.searchParams.get('response_type'), 'code');
   assert.equal(url.searchParams.get('response_mode'), 'query');
   assert.equal(url.searchParams.get('scope'), 'offline_access Mail.Send User.Read');
+  const mailboxUrl = new URL(buildOutlookAuthorizationUrl({
+    clientId: 'microsoft-client-id',
+    tenantId: 'common',
+    redirectUri: 'http://localhost:8765/microsoft/oauth/callback',
+    state: 'state-value',
+    codeChallenge: 'pkce-challenge',
+    mailboxAccess: true
+  }));
+  assert.equal(mailboxUrl.searchParams.get('scope'), 'offline_access Mail.Send Mail.ReadWrite User.Read');
   assert.equal(url.searchParams.get('code_challenge'), 'pkce-challenge');
   assert.equal(url.searchParams.get('code_challenge_method'), 'S256');
   assert.equal(url.searchParams.get('state'), 'state-value');
@@ -295,6 +312,23 @@ test('Outlook exchanges a public-client authorization code with PKCE', async () 
   assert.equal(body.get('code_verifier'), 'pkce-verifier');
   assert.equal(body.get('client_secret'), null);
   assert(calls[0].init?.signal instanceof AbortSignal);
+});
+
+test('Outlook rejects mailbox authorization without the delegated Mail.ReadWrite scope', async () => {
+  const fetchFn = (async () => new Response(JSON.stringify({
+    access_token: 'access-token',
+    refresh_token: 'refresh-token',
+    scope: 'Mail.Send User.Read'
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } })) as typeof fetch;
+
+  await assert.rejects(() => exchangeOutlookAuthorizationCode({
+    clientId: 'microsoft-client-id',
+    tenantId: 'common',
+    code: 'authorization-code',
+    codeVerifier: 'pkce-verifier',
+    redirectUri: 'http://localhost:8765/microsoft/oauth/callback',
+    mailboxAccess: true
+  }, fetchFn), /missing required scope/);
 });
 
 test('Outlook accepts an omitted scope field after requesting the fixed approved scope set', async () => {
@@ -1054,6 +1088,32 @@ test('Outlook persistence stores a public-client refresh token without a client 
     assert.equal(parsed.providers.outlook.tenantId, 'common');
     assert.equal(parsed.providers.outlook.fromAddress, 'owner@outlook.com');
     assert.equal(parsed.defaults.provider, 'outlook');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('Outlook mailbox persistence writes a named provider and profile with mailbox access', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-outlook-profile-persist-'));
+  try {
+    const configPath = join(dir, 'config.yaml');
+    await writeFile(configPath, 'providers: {}\ndefaults:\n  provider: log\n', { encoding: 'utf8', mode: 0o600 });
+    await persistOutlookOnboarding({
+      configPath,
+      store: { set: async () => undefined },
+      clientId: 'microsoft-client-id',
+      refreshToken: 'microsoft-refresh-token',
+      tenantId: 'common',
+      email: 'work@example.com',
+      setAsDefault: false,
+      providerName: 'outlook-work',
+      mailboxProfileName: 'work',
+      mailboxAccess: true
+    });
+    const parsed = YAML.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
+    assert.equal(parsed.providers['outlook-work'].mailboxAccess, true);
+    assert.deepEqual(parsed.mailboxProfiles.work, { provider: 'outlook-work' });
+    assert.equal(parsed.defaults.provider, 'log');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

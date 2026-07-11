@@ -7,10 +7,10 @@ agent-gate is designed to be the **send boundary** for Hermes Agent. Hermes can 
 ```text
 Hermes Agent                         agent-gate
 ------------                         ----------
-bounded Gmail list/read/mark      ->  fixed Unix-socket broker
+named Gmail/Outlook list/read/mark -> fixed Unix-socket broker
 draft outbound email JSON         ->  write-only inbox
 Trash/unsubscribe proposal        ->  Telegram approval snapshot
-NO SMTP/IMAP credentials              owns Gmail credentials
+NO SMTP/IMAP/OAuth credentials        owns provider credentials
 NO approval bot token                 owns Telegram approval bot
 ```
 
@@ -85,10 +85,11 @@ Store the separate Telegram approval-bot token first; onboarding restarts the se
 sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
 ```
 
-The simplest Gmail path is a dedicated, revocable Google App Password:
+The simplest Gmail path is a dedicated, revocable Google App Password. Add `--profile` when an account should be available through the bounded Inbox broker:
 
 ```bash
 sudo /opt/agent-gate/scripts/smtp-setup.sh gmail
+sudo /opt/agent-gate/scripts/smtp-setup.sh gmail --profile personal
 ```
 
 This avoids Google Cloud/OAuth app setup. It requires Google 2-Step Verification and App Password availability, and the credential is broader than a `gmail.send` OAuth token. See [smtp-onboarding.md](smtp-onboarding.md).
@@ -99,6 +100,7 @@ For narrower OAuth authorization instead:
 sudo /opt/agent-gate/scripts/oauth-setup.sh gmail
 # or
 sudo /opt/agent-gate/scripts/oauth-setup.sh outlook
+sudo /opt/agent-gate/scripts/oauth-setup.sh outlook --profile work
 # or
 sudo /opt/agent-gate/scripts/oauth-setup.sh zoho
 ```
@@ -136,26 +138,28 @@ For a hard boundary, do not configure these in Hermes:
 
 Bounded brokered mailbox access is fine. Direct mailbox credentials are not. Drafting is fine. Sending belongs to agent-gate.
 
-## Bounded Gmail Mailbox Workflow
+## Bounded Multi-Account Mailbox Workflow
 
-The production client provides the only Gmail capability Hermes should receive:
+The production client provides the only Gmail/Outlook mailbox capability Hermes should receive:
 
 ```bash
-/usr/local/bin/agent-gate-mailbox list --unread --limit 20
+/usr/local/bin/agent-gate-mailbox profiles
+/usr/local/bin/agent-gate-mailbox list --profile personal --unread --limit 20
+/usr/local/bin/agent-gate-mailbox list --profile work --unread --limit 20
 /usr/local/bin/agent-gate-mailbox read MESSAGE_REF
 /usr/local/bin/agent-gate-mailbox mark-read MESSAGE_REF [MESSAGE_REF ...]
 /usr/local/bin/agent-gate-mailbox propose-trash MESSAGE_REF [MESSAGE_REF ...] --context 'Why these messages are unwanted'
 /usr/local/bin/agent-gate-mailbox propose-unsubscribe MESSAGE_REF --context 'Why this subscription should stop'
 ```
 
-The broker fixes the Gmail account, server, folder, operations, and bounds. It returns opaque references tied to the current INBOX `UIDVALIDITY`; stale references fail closed. Reading uses peek semantics. Mark-read adds only `\Seen` to exact references.
+Each `profiles` result includes the exact outbound `provider` key for that account; use it for reply drafts without reading private config or deriving it from the profile name. Each profile fixes one provider account, the Inbox folder, operations, and bounds. Gmail uses opaque references tied to the current Inbox `UIDVALIDITY`; Outlook uses Graph immutable message IDs. Legacy Gmail references remain bound only to the unique `gmail-smtp` compatibility provider, whether it is exposed as `default` or explicitly named. Every reference also binds its profile/backend, mixed-profile bulk requests fail closed, and stale references fail closed. Reading does not mark mail read. Mark-read changes only exact references.
 
-Trash and unsubscribe are proposals, not direct actions. agent-gate fetches authoritative message metadata, binds the exact snapshot to a random single-use Telegram token, and executes only after approval. Trash uses Gmail's native MOVE capability and never EXPUNGEs. Unsubscribe accepts only standardized headers: RFC 8058 HTTPS one-click first, then one strict RFC 2369 `mailto:` fallback. Message-body links, browser sessions, redirects, cookies, and arbitrary URLs are never executed.
+Trash and unsubscribe are proposals, not direct actions. agent-gate fetches authoritative message metadata, binds the exact snapshot to a random single-use Telegram token, and executes only after approval. Gmail Trash uses native IMAP MOVE and never EXPUNGEs; Outlook Trash uses the fixed Graph move endpoint with destination `deleteditems`. Unsubscribe accepts only standardized headers: RFC 8058 HTTPS one-click first, then one strict RFC 2369 `mailto:` fallback. Message-body links, browser sessions, redirects, cookies, arbitrary URLs, and permanent deletion are unavailable.
 
 If a Hermes process predates mailbox-group installation, use this temporary fallback until the process is restarted or the user logs in again:
 
 ```bash
-sg agentgate-mailbox -c '/usr/local/bin/agent-gate-mailbox list --unread --limit 20'
+sg agentgate-mailbox -c '/usr/local/bin/agent-gate-mailbox list --profile PROFILE --unread --limit 20'
 ```
 
 ## Daily Use From Hermes
