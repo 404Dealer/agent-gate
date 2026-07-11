@@ -199,7 +199,11 @@ export class GmailInboxBroker {
     });
   }
 
-  async markRead(encodedReferences: string[]): Promise<{ requested: number; verified: number }> {
+  async markRead(encodedReferences: string[]): Promise<{
+    outcome: 'applied' | 'partial';
+    requested: number;
+    verified: number;
+  }> {
     const references = encodedReferences.map(decodeInboxReference);
     const unique = new Map(references.map((reference) => [reference.uid, reference]));
     const exact = [...unique.values()];
