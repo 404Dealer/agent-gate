@@ -1,7 +1,7 @@
 ---
 name: agent-gate
-description: Read Gmail through a bounded credential-isolated mailbox broker, and send emails or other external actions through a human-approved deterministic gate. Use for mailbox triage, mark-read, outbound email, replies, forwards, webhooks, and gated side effects.
-version: 1.1.0
+description: Read Gmail through a bounded credential-isolated mailbox broker, and execute email, Trash, unsubscribe, or other external actions through a human-approved deterministic gate. Use for mailbox triage, mark-read, outbound email, replies, forwards, unsubscribe, webhooks, and gated side effects.
+version: 1.2.0
 author: 404Dealer
 license: MIT
 metadata:
@@ -35,6 +35,7 @@ Use for:
 - listing recent Gmail INBOX metadata
 - reading and summarizing an exact INBOX message
 - marking exact message references read when the user has granted that direct permission
+- proposing exact Gmail Trash moves and standards-based unsubscribe requests for Telegram approval
 - sending or replying to email
 - forwarding email
 - sending webhooks/API calls
@@ -56,9 +57,10 @@ The production client is:
 /usr/local/bin/agent-gate-mailbox read MESSAGE_REF
 /usr/local/bin/agent-gate-mailbox mark-read MESSAGE_REF [MESSAGE_REF ...]
 /usr/local/bin/agent-gate-mailbox propose-trash MESSAGE_REF [MESSAGE_REF ...] --context 'Why these messages are unwanted'
+/usr/local/bin/agent-gate-mailbox propose-unsubscribe MESSAGE_REF --context 'Why this subscription should stop'
 ```
 
-All output is JSON. `list` scans a bounded newest-UID window and returns opaque references. `read` retrieves one exact `INBOX + UIDVALIDITY + UID` reference using `BODY.PEEK`, so reading alone does not add `\\Seen`. `mark-read` accepts at most 20 exact references, adds only `\\Seen`, and reports requested versus verified counts.
+All output is JSON. `list` scans a bounded newest-UID window and returns opaque references. `read` retrieves one exact `INBOX + UIDVALIDITY + UID` reference using `BODY.PEEK`, so reading alone does not add `\\Seen`. `mark-read` accepts at most 20 exact references, adds only `\\Seen`, and reports requested versus verified counts. `propose-unsubscribe` accepts one exact reference, reads only authoritative `List-Unsubscribe` headers, and creates a Telegram approval for RFC 8058 HTTPS one-click or a strict RFC 2369 unsubscribe email. It never follows links from the message body; unsupported messages fail before a proposal is created.
 
 If the current Hermes process predates mailbox-group installation and gets `Permission denied`, use the group-database fallback until Hermes is restarted:
 

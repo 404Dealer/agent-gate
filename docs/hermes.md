@@ -7,10 +7,11 @@ agent-gate is designed to be the **send boundary** for Hermes Agent. Hermes can 
 ```text
 Hermes Agent                         agent-gate
 ------------                         ----------
-read/search/summarize email      ->  no access needed
-draft outbound email JSON        ->  write-only inbox
-NO SMTP/API send credentials         owns send credentials
-NO approval bot token                owns Telegram approval bot
+bounded Gmail list/read/mark      ->  fixed Unix-socket broker
+draft outbound email JSON         ->  write-only inbox
+Trash/unsubscribe proposal        ->  Telegram approval snapshot
+NO SMTP/IMAP credentials              owns Gmail credentials
+NO approval bot token                 owns Telegram approval bot
 ```
 
 This makes prompt injection less dangerous: an email can influence what Hermes drafts, but it cannot make Hermes send because Hermes has no send credentials and no approval channel.
@@ -42,7 +43,9 @@ For Hermes + agent-gate to be a hard boundary:
 
 - Hermes and agent-gate must run as different OS users.
 - Hermes should only have write-only inbox access through the `agentgate-inbox` group.
+- Hermes should receive mailbox access only through the fixed broker socket and `agentgate-mailbox` capability group.
 - Hermes must not have Gmail/Zoho/SMTP send credentials.
+- Hermes must not have raw Gmail IMAP credentials or an arbitrary IMAP client path.
 - Hermes must not have the agent-gate Telegram bot token.
 - agent-gate should run with `security.enforceProductionPermissions: true`.
 - Production directory permissions should match `docs/deployment.md`.
@@ -131,7 +134,29 @@ For a hard boundary, do not configure these in Hermes:
 - Zoho/SendGrid/Mailgun API keys
 - agent-gate Telegram bot token
 
-Read-only mailbox access is fine. Drafting is fine. Sending belongs to agent-gate.
+Bounded brokered mailbox access is fine. Direct mailbox credentials are not. Drafting is fine. Sending belongs to agent-gate.
+
+## Bounded Gmail Mailbox Workflow
+
+The production client provides the only Gmail capability Hermes should receive:
+
+```bash
+/usr/local/bin/agent-gate-mailbox list --unread --limit 20
+/usr/local/bin/agent-gate-mailbox read MESSAGE_REF
+/usr/local/bin/agent-gate-mailbox mark-read MESSAGE_REF [MESSAGE_REF ...]
+/usr/local/bin/agent-gate-mailbox propose-trash MESSAGE_REF [MESSAGE_REF ...] --context 'Why these messages are unwanted'
+/usr/local/bin/agent-gate-mailbox propose-unsubscribe MESSAGE_REF --context 'Why this subscription should stop'
+```
+
+The broker fixes the Gmail account, server, folder, operations, and bounds. It returns opaque references tied to the current INBOX `UIDVALIDITY`; stale references fail closed. Reading uses peek semantics. Mark-read adds only `\Seen` to exact references.
+
+Trash and unsubscribe are proposals, not direct actions. agent-gate fetches authoritative message metadata, binds the exact snapshot to a random single-use Telegram token, and executes only after approval. Trash uses Gmail's native MOVE capability and never EXPUNGEs. Unsubscribe accepts only standardized headers: RFC 8058 HTTPS one-click first, then one strict RFC 2369 `mailto:` fallback. Message-body links, browser sessions, redirects, cookies, and arbitrary URLs are never executed.
+
+If a Hermes process predates mailbox-group installation, use this temporary fallback until the process is restarted or the user logs in again:
+
+```bash
+sg agentgate-mailbox -c '/usr/local/bin/agent-gate-mailbox list --unread --limit 20'
+```
 
 ## Daily Use From Hermes
 
@@ -147,6 +172,8 @@ Hermes should:
 4. respond: “Drafted and waiting for approval in agent-gate Telegram.”
 
 Hermes should **not** say “sent” and should not call any direct send tool.
+
+For mailbox cleanup, Hermes may summarize bounded broker results and mark exact references read when the user has granted that permission. It may create Trash or unsubscribe proposals, but must report them as pending until the Telegram gate reports the result.
 
 ## Production Check
 

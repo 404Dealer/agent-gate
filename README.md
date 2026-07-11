@@ -2,9 +2,9 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
-[![Node.js](https://img.shields.io/badge/Node.js-20%2B-green.svg)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-22%2B-green.svg)](https://nodejs.org/)
 
-Deterministic approval layer between AI agents and external actions.
+Credential-isolated approval layer between AI agents and external actions, with bounded Gmail triage and Telegram-approved send, Trash, and unsubscribe operations.
 
 **Agents propose. Humans approve. Scripts execute.** No AI in the execution path.
 
@@ -44,12 +44,13 @@ agent-gate is only a **hard security boundary** when these requirements are true
 | The agent has write-only access to the inbox | The agent can propose drafts but cannot list, read, edit, delete, or replace drafts after submission |
 | Send credentials live only in agent-gate | If the agent also has SMTP/Gmail/Zoho send credentials, it can bypass the gate |
 | The approval bot token is not available to the agent | Prevents the agent from approving its own drafts |
+| Gmail access is exposed only through the bounded Unix-socket broker | Keeps the App Password and arbitrary IMAP commands outside the agent process |
 | `security.enforceProductionPermissions: true` in production | Fails closed if the write-only inbox/private state directories are misconfigured |
 | Humans review the actual outbound payload | The approval decision is about the concrete email/webhook body, recipients, provider, and context |
 
 If you run agent-gate and your agent as the same Unix user, or give the agent direct send credentials, agent-gate is still useful as an approval workflow — but it is **not** a structural security boundary.
 
-See [docs/deployment.md](docs/deployment.md) for the production filesystem setup, [docs/hermes.md](docs/hermes.md) for Hermes-specific integration, [docs/credential-handoff.md](docs/credential-handoff.md) for operator responsibilities, [docs/smtp-onboarding.md](docs/smtp-onboarding.md) for simple Gmail App Password setup, [docs/mailbox-cleanup.md](docs/mailbox-cleanup.md) for human-gated Spam/Trash unread cleanup, and [docs/oauth-onboarding.md](docs/oauth-onboarding.md) for narrower OAuth authorization.
+See [docs/deployment.md](docs/deployment.md) for the production filesystem setup, [docs/hermes.md](docs/hermes.md) for bounded mailbox and outbound Hermes integration, [docs/credential-handoff.md](docs/credential-handoff.md) for operator responsibilities, [docs/smtp-onboarding.md](docs/smtp-onboarding.md) for simple Gmail App Password setup, [docs/mailbox-cleanup.md](docs/mailbox-cleanup.md) for human-gated Spam/Trash unread cleanup, and [docs/oauth-onboarding.md](docs/oauth-onboarding.md) for narrower OAuth authorization.
 
 ## How This Differs from Hermes Built-In Approval
 
@@ -282,6 +283,22 @@ sudo /opt/agent-gate/scripts/mailbox-cleanup.sh gmail
 
 The helper previews counts, requires the exact phrase `MARK READ`, and adds only `\Seen` to the snapshotted unread UIDs. It never deletes, moves, empties, or displays messages. See **[docs/mailbox-cleanup.md](docs/mailbox-cleanup.md)** for UID snapshot semantics, auditing, partial outcomes, and troubleshooting.
 
+### Bounded Gmail INBOX broker for Hermes
+
+The production installer exposes a fixed Unix-socket client without giving Hermes the Gmail App Password or arbitrary IMAP access:
+
+```bash
+/usr/local/bin/agent-gate-mailbox list --unread --limit 20
+/usr/local/bin/agent-gate-mailbox read MESSAGE_REF
+/usr/local/bin/agent-gate-mailbox mark-read MESSAGE_REF [MESSAGE_REF ...]
+/usr/local/bin/agent-gate-mailbox propose-trash MESSAGE_REF [MESSAGE_REF ...] --context 'Why these messages are unwanted'
+/usr/local/bin/agent-gate-mailbox propose-unsubscribe MESSAGE_REF --context 'Why this subscription should stop'
+```
+
+`list` and `read` are bounded to Gmail INBOX and use opaque `UIDVALIDITY + UID` references. `read` uses peek semantics and does not mark mail read. `mark-read` can add only `\Seen` to at most 20 exact references. Trash moves and unsubscribe requests require hash-bound Telegram approval.
+
+Unsubscribe uses only authoritative `List-Unsubscribe` headers: RFC 8058 HTTPS one-click is preferred, with a strict RFC 2369 unsubscribe email fallback. It never follows links from the message body. HTTPS redirects, cookies, private-network targets, and caller-supplied URLs are unavailable. Permanent deletion and EXPUNGE remain unavailable.
+
 ### Secure OAuth onboarding
 
 A production installation can acquire provider refresh tokens without giving them to Hermes:
@@ -433,6 +450,7 @@ agent-gate/
 │   ├── bot.ts            # Telegram bot (previews + callbacks)
 │   ├── executor.ts       # Reads approved drafts, dispatches to providers
 │   ├── schema.ts         # Zod schemas + validation
+│   ├── mailbox-broker/   # Bounded INBOX, Trash, and unsubscribe capabilities
 │   └── providers/
 │       ├── index.ts       # Provider registry
 │       ├── email-gmail.ts  # Gmail API
@@ -473,6 +491,9 @@ agent-gate/
 - ✅ From-address enforcement in execution and approval preview
 - ✅ Safe long-body preview policy (truncated drafts deny-only by default)
 - ✅ Optional production permission checks at startup
+- ✅ Credential-isolated Gmail INBOX list/read/mark-read broker for Hermes
+- ✅ Telegram-approved Gmail Trash moves with no permanent-delete path
+- ✅ Standards-based HTTPS/mailto unsubscribe with no body-link execution
 
 ### Planned
 

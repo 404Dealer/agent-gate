@@ -7,6 +7,7 @@ import type { DraftWatcher } from './watcher.js';
 import { DraftSchema, updateStatus, type Draft } from './schema.js';
 import { Executor, type ExecutionResult } from './executor.js';
 import type { MailboxTrashSnapshot } from './mailbox-broker/gmail-trash.js';
+import type { MailboxUnsubscribeSnapshot } from './mailbox-broker/gmail-unsubscribe.js';
 
 export interface ApprovalPreviewOptions {
   configuredSender: string;
@@ -28,6 +29,7 @@ export interface ApprovalTokenRecord {
   hash: string;
   expiresAt: number;
   mailboxTrashSnapshot?: MailboxTrashSnapshot;
+  mailboxUnsubscribeSnapshot?: MailboxUnsubscribeSnapshot;
 }
 
 export interface DeliveryNotification {
@@ -121,6 +123,37 @@ export async function executeAndNotifyMailboxTrash(
     const raw = error instanceof Error ? error.message : String(error);
     const safeError = raw.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500);
     await channel.reply(`⚠️ Approved but move to Trash failed: ${safeError}`).catch(() => {});
+  }
+}
+
+export async function executeAndNotifyMailboxUnsubscribe(
+  execute: () => Promise<ExecutionResult>,
+  channel: DeliveryNotificationChannel
+): Promise<void> {
+  await channel.acknowledge('✅ Approved; requesting unsubscribe…').catch(() => {});
+  try {
+    const result = await execute();
+    if (
+      result.outcome !== 'unsubscribe-accepted' &&
+      result.outcome !== 'unsubscribe-rejected' &&
+      result.outcome !== 'unsubscribe-ambiguous'
+    ) {
+      throw new Error('Unexpected unsubscribe execution result');
+    }
+    const method = result.method === 'https' ? 'HTTPS one-click' : 'unsubscribe email';
+    if (result.persistenceWarning) {
+      await channel.reply(`⚠️ ${method} was attempted, but local archive/audit finalization failed. Do not retry automatically.`).catch(() => {});
+    } else if (result.outcome === 'unsubscribe-accepted') {
+      await channel.reply(`✅ ${method} request accepted. Future delivery may take time to stop.`).catch(() => {});
+    } else if (result.outcome === 'unsubscribe-rejected') {
+      await channel.reply(`⚠️ ${method} request was rejected: ${result.details}`).catch(() => {});
+    } else {
+      await channel.reply(`⚠️ ${method} outcome could not be confirmed. It may have succeeded; do not retry automatically.`).catch(() => {});
+    }
+  } catch (error) {
+    const raw = error instanceof Error ? error.message : String(error);
+    const safeError = raw.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500);
+    await channel.reply(`⚠️ Approved but unsubscribe failed: ${safeError}`).catch(() => {});
   }
 }
 
@@ -220,6 +253,66 @@ export function buildMailboxTrashPreview(draft: Extract<Draft, { type: 'mailbox-
   return {
     text,
     canApprove: text.length <= 4096,
+    fullBodyChars: text.length,
+    shownBodyChars: Math.min(text.length, 4096)
+  };
+}
+
+export function buildMailboxUnsubscribePreview(
+  draft: Extract<Draft, { type: 'mailbox-unsubscribe' }>,
+  snapshot: MailboxUnsubscribeSnapshot
+): ApprovalPreview {
+  const date = snapshot.receivedAt ? snapshot.receivedAt.slice(0, 10) : 'unknown date';
+  const common = [
+    '🚫 Unsubscribe Request',
+    '',
+    `Account: ${preview(snapshot.account, 320)}`,
+    `From: ${preview(snapshot.from, 500)}`,
+    `Message subject: ${preview(snapshot.subjectLine, 500)}`,
+    `Message: INBOX UID ${snapshot.uid} · UIDVALIDITY ${snapshot.uidValidity} · ${date}`
+  ];
+  let text: string;
+  let canApprove = true;
+  if (snapshot.method === 'rfc8058-https-post') {
+    text = [
+      ...common,
+      'Method: RFC 8058 HTTPS one-click POST',
+      `Destination host: ${preview(snapshot.endpointHost, 300)}`,
+      'Personalized endpoint: hidden inside the approval token',
+      '',
+      'No browser, cookies, redirect, or message-body link will be used.',
+      'The existing message will not be deleted, moved, archived, or marked read.',
+      '',
+      `Source: ${draft.source}`,
+      `Context: ${preview(draft.metadata.context || '[none]', 500)}`
+    ].join('\n');
+  } else {
+    const bodyLimit = 1800;
+    const shownBody = preview(snapshot.body, bodyLimit);
+    const truncated = snapshot.body.length > bodyLimit;
+    text = [
+      ...common,
+      'Method: RFC 2369 unsubscribe email',
+      '',
+      `To: ${snapshot.recipient}`,
+      `Email subject: ${snapshot.subject}`,
+      'Email body:',
+      '─────────────',
+      shownBody,
+      '─────────────',
+      'CC/BCC/reply-to/attachments: none',
+      ...(truncated ? ['⚠️ Full mailto body does not fit; approval is disabled.'] : []),
+      '',
+      'The existing message will not be deleted, moved, archived, or marked read.',
+      '',
+      `Source: ${draft.source}`,
+      `Context: ${preview(draft.metadata.context || '[none]', 500)}`
+    ].join('\n');
+    canApprove = !truncated;
+  }
+  return {
+    text,
+    canApprove: canApprove && text.length <= 4096,
     fullBodyChars: text.length,
     shownBodyChars: Math.min(text.length, 4096)
   };
@@ -345,6 +438,11 @@ export class AgentGateBot {
             () => this.executor.executeApprovedDraft(approvedPath, record.mailboxTrashSnapshot),
             channel
           );
+        } else if (draft.type === 'mailbox-unsubscribe') {
+          await executeAndNotifyMailboxUnsubscribe(
+            () => this.executor.executeApprovedDraft(approvedPath, undefined, record.mailboxUnsubscribeSnapshot),
+            channel
+          );
         } else {
           await executeAndNotifyDelivery(
             () => this.executor.executeApprovedDraft(approvedPath),
@@ -424,6 +522,10 @@ export class AgentGateBot {
       const mailboxTrashSnapshot = await this.executor.prepareMailboxTrash(boundDraft);
       token = { ...token, mailboxTrashSnapshot };
       previewResult = buildMailboxTrashPreview(boundDraft, mailboxTrashSnapshot);
+    } else if (boundDraft.type === 'mailbox-unsubscribe') {
+      const mailboxUnsubscribeSnapshot = await this.executor.prepareMailboxUnsubscribe(boundDraft);
+      token = { ...token, mailboxUnsubscribeSnapshot };
+      previewResult = buildMailboxUnsubscribePreview(boundDraft, mailboxUnsubscribeSnapshot);
     } else {
       previewResult = buildApprovalPreview(boundDraft, {
         configuredSender: this.executor.describeProviderSender(providerName),

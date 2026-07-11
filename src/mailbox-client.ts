@@ -11,7 +11,8 @@ type ClientRequest =
   | { v: 1; id: string; op: 'list'; unread: boolean; limit: number }
   | { v: 1; id: string; op: 'read'; ref: string }
   | { v: 1; id: string; op: 'mark-read'; refs: string[] }
-  | { v: 1; id: string; op: 'propose-trash'; refs: string[]; context: string };
+  | { v: 1; id: string; op: 'propose-trash'; refs: string[]; context: string }
+  | { v: 1; id: string; op: 'propose-unsubscribe'; ref: string; context: string };
 
 interface ClientResponse {
   v: 1;
@@ -27,6 +28,7 @@ const usage = (): string => [
   '  agent-gate-mailbox read MESSAGE_REF',
   '  agent-gate-mailbox mark-read MESSAGE_REF [MESSAGE_REF ...]',
   '  agent-gate-mailbox propose-trash MESSAGE_REF [MESSAGE_REF ...] [--context TEXT]',
+  '  agent-gate-mailbox propose-unsubscribe MESSAGE_REF [--context TEXT]',
   '',
   'Outputs JSON. Gmail credentials remain inside the isolated agent-gate service.'
 ].join('\n');
@@ -96,6 +98,21 @@ export function parseMailboxClientArgs(argv: string[]): ClientRequest | 'help' {
       throw new Error('Invalid mailbox command');
     }
     return { v: 1, id, op: 'propose-trash', refs, context };
+  }
+  if (command === 'propose-unsubscribe') {
+    const contextIndex = argv.indexOf('--context');
+    const hasContext = contextIndex >= 0;
+    if (hasContext && (contextIndex !== 2 || contextIndex + 2 !== argv.length)) {
+      throw new Error('Invalid mailbox command');
+    }
+    const ref = argv[1];
+    const context = hasContext
+      ? argv[contextIndex + 1]
+      : 'User requested a standards-based unsubscribe for this exact INBOX message';
+    if ((!hasContext && argv.length !== 2) || !ref || !validRef(ref) || context.length > 1000) {
+      throw new Error('Invalid mailbox command');
+    }
+    return { v: 1, id, op: 'propose-unsubscribe', ref, context };
   }
   throw new Error('Invalid mailbox command');
 }
