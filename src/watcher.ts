@@ -55,7 +55,9 @@ export class DraftWatcher extends EventEmitter {
     });
 
     this.watcher.on('error', (error) => {
-      this.emit('error', error);
+      if (this.listenerCount('error') > 0) {
+        this.emit('error', error);
+      }
     });
 
     await new Promise<void>((resolveReady, rejectReady) => {
