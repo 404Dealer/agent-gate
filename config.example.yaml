@@ -51,6 +51,9 @@ providers:
     tenantId: "common"
     fromAddress: "you@outlook.com"
     displayName: "Your Name"
+    # Required only when this provider is attached to mailboxProfiles.
+    # The refresh token must have delegated Mail.ReadWrite as well as Mail.Send.
+    mailboxAccess: true
 
   zoho:
     type: "email-zoho"
@@ -63,6 +66,14 @@ providers:
 
   log:
     type: "log-only"
+
+# Optional bounded Inbox profiles. Each profile selects exactly one provider.
+# Add more entries/providers for additional Gmail or Outlook accounts.
+mailboxProfiles:
+  personal:
+    provider: "gmail-smtp"
+  work:
+    provider: "outlook"
 
 defaults:
   provider: "log"

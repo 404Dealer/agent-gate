@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open, unlink, type FileHandle } from 'node:fs/promises';
-import { updateProviderConfig, validateProviderConfigTarget, validateProviderName } from './config-writer.js';
+import { updateProviderConfig, validateMailboxProfileName, validateProviderConfigTarget, validateProviderName } from './config-writer.js';
 import type { ZohoRegion } from './zoho.js';
 
 export interface SecretStore {
@@ -81,10 +81,12 @@ interface PersistSmtpOptions {
   fromAddress: string;
   displayName?: string;
   setAsDefault: boolean;
+  mailboxProfileName?: string;
 }
 
 export async function persistSmtpOnboarding(options: PersistSmtpOptions): Promise<void> {
   validateProviderName(options.providerName);
+  if (options.mailboxProfileName) validateMailboxProfileName(options.mailboxProfileName);
   await withOnboardingLock(options.configPath, async () => {
     const id = transactionId();
     const passwordKey = versionedKey('smtp-password', id);
@@ -101,7 +103,13 @@ export async function persistSmtpOnboarding(options: PersistSmtpOptions): Promis
     };
     if (options.displayName) provider.displayName = options.displayName;
 
-    await updateProviderConfig(options.configPath, options.providerName, provider, options.setAsDefault);
+    await updateProviderConfig(
+      options.configPath,
+      options.providerName,
+      provider,
+      options.setAsDefault,
+      options.mailboxProfileName
+    );
   });
 }
 
@@ -114,9 +122,15 @@ interface PersistOutlookOptions {
   email: string;
   displayName?: string;
   setAsDefault: boolean;
+  providerName?: string;
+  mailboxProfileName?: string;
+  mailboxAccess?: boolean;
 }
 
 export async function persistOutlookOnboarding(options: PersistOutlookOptions): Promise<void> {
+  const providerName = options.providerName ?? 'outlook';
+  validateProviderName(providerName);
+  if (options.mailboxProfileName) validateMailboxProfileName(options.mailboxProfileName);
   await withOnboardingLock(options.configPath, async () => {
     const id = transactionId();
     const clientIdKey = versionedKey('microsoft-client-id', id);
@@ -130,11 +144,18 @@ export async function persistOutlookOnboarding(options: PersistOutlookOptions): 
       refreshToken: passReference(refreshTokenKey),
       refreshTokenKey,
       tenantId: options.tenantId,
-      fromAddress: options.email
+      fromAddress: options.email,
+      ...(options.mailboxAccess ? { mailboxAccess: true } : {})
     };
     if (options.displayName) provider.displayName = options.displayName;
 
-    await updateProviderConfig(options.configPath, 'outlook', provider, options.setAsDefault);
+    await updateProviderConfig(
+      options.configPath,
+      providerName,
+      provider,
+      options.setAsDefault,
+      options.mailboxProfileName
+    );
   });
 }
 

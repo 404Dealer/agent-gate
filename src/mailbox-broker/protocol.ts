@@ -10,7 +10,7 @@ const RequestBase = z.object({
   id: z.string().uuid()
 });
 
-const MessageRefSchema = z.string().min(8).max(256).regex(/^[A-Za-z0-9_-]+$/).refine((value) => {
+const MessageRefSchema = z.string().min(8).max(4096).regex(/^[A-Za-z0-9_-]+$/).refine((value) => {
   try {
     decodeInboxReference(value);
     return true;
@@ -29,7 +29,11 @@ const UniqueMessageRefsSchema = z.array(MessageRefSchema).min(1).max(20).superRe
 
 export const MailboxRequestSchema = z.discriminatedUnion('op', [
   RequestBase.extend({
+    op: z.literal('profiles')
+  }).strict(),
+  RequestBase.extend({
     op: z.literal('list'),
+    profile: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/).optional(),
     unread: z.boolean().default(false),
     limit: z.number().int().min(1).max(50).default(20)
   }).strict(),

@@ -19,7 +19,7 @@ const GmailAddressSchema = z.string().email().refine(
   'Gmail address contains unsafe characters'
 );
 
-const usage = (): string => `Usage: agent-gate-smtp-setup gmail [--config PATH]
+const usage = (): string => `Usage: agent-gate-smtp-setup gmail [--profile NAME] [--config PATH]
 
 Interactive Gmail App Password onboarding over authenticated SMTP/TLS.
 Run this only through scripts/smtp-setup.sh from a human-controlled SSH/local terminal.
@@ -81,10 +81,11 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     const safeEmail = sanitizeTerminalText(email);
     const setAsDefault = await promptConfirm(`Verified ${safeEmail}. Set Gmail SMTP as the default provider?`);
 
+    const providerName = options.profile ? `gmail-${options.profile}` : 'gmail-smtp';
     await persistSmtpOnboarding({
       configPath: options.configPath,
       store: new PassSecretStore({ executable: passExecutable }),
-      providerName: 'gmail-smtp',
+      providerName,
       host: 'smtp.gmail.com',
       port: 465,
       tlsMode: 'implicit',
@@ -92,7 +93,8 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       password,
       fromAddress: email,
       displayName: displayName || undefined,
-      setAsDefault
+      setAsDefault,
+      mailboxProfileName: options.profile
     });
     console.log(`\nGmail SMTP onboarding complete for ${safeEmail}. No password value was printed.`);
   } finally {

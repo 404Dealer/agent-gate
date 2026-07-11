@@ -24,6 +24,11 @@ const SecurityConfigSchema = z.object({
   enforceProductionPermissions: z.boolean().default(false)
 }).default({});
 
+const MailboxProfilesSchema = z.record(
+  z.string().regex(/^[a-z][a-z0-9-]{0,31}$/),
+  z.object({ provider: z.string().min(1) }).strict()
+).optional();
+
 const SmtpHostSchema = z.string().min(1).max(253).refine((value) => {
   if (isIP(value) !== 0) return true;
   const host = value.endsWith('.') ? value.slice(0, -1) : value;
@@ -72,6 +77,7 @@ const ProviderSchema = z.discriminatedUnion('type', [
     refreshTokenKey: z.string().regex(/^agent-gate\/[a-z0-9][a-z0-9-]*$/).optional(),
     tenantId: z.string().min(1).default('common'),
     userId: z.string().min(1).optional(),
+    mailboxAccess: z.boolean().optional(),
     fromAddress: z.string().email(),
     displayName: z.string().optional()
   })
@@ -83,6 +89,7 @@ const ConfigSchema = z.object({
   approval: ApprovalConfigSchema,
   security: SecurityConfigSchema,
   providers: z.record(ProviderSchema),
+  mailboxProfiles: MailboxProfilesSchema,
   defaults: z.object({
     provider: z.string().min(1),
     timezone: z.string().default('UTC'),

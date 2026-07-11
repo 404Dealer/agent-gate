@@ -113,11 +113,11 @@ export async function executeAndNotifyMailboxTrash(
       throw new Error('Unexpected mailbox execution result');
     }
     if (result.persistenceWarning) {
-      await channel.reply(`⚠️ Gmail moved ${result.verifiedMovedCount}/${result.requestedCount} message(s), but local archive/audit finalization failed. Do not retry automatically.`).catch(() => {});
+      await channel.reply(`⚠️ Mailbox moved ${result.verifiedMovedCount}/${result.requestedCount} message(s), but local archive/audit finalization failed. Do not retry automatically.`).catch(() => {});
     } else if (result.outcome === 'moved') {
-      await channel.reply(`🗑️ Moved ${result.verifiedMovedCount} message(s) to Gmail Trash.`).catch(() => {});
+      await channel.reply(`🗑️ Moved ${result.verifiedMovedCount} message(s) to the configured Trash/Deleted Items folder.`).catch(() => {});
     } else {
-      await channel.reply(`⚠️ Gmail move was only partially verified (${result.verifiedMovedCount}/${result.requestedCount}). Do not retry automatically.`).catch(() => {});
+      await channel.reply(`⚠️ Mailbox move was only partially verified (${result.verifiedMovedCount}/${result.requestedCount}). Do not retry automatically.`).catch(() => {});
     }
   } catch (error) {
     const raw = error instanceof Error ? error.message : String(error);
@@ -232,15 +232,22 @@ export function buildMailboxTrashPreview(draft: Extract<Draft, { type: 'mailbox-
   const subjectLimit = Math.max(50, perItem - fromLimit - 28);
   const itemLines = snapshot.items.map((item, index) => {
     const date = item.receivedAt ? item.receivedAt.slice(0, 10) : 'unknown date';
-    return `${index + 1}. UID ${item.uid} · ${preview(item.from, fromLimit)} — ${preview(item.subject, subjectLimit)} — ${date}`;
+    const identity = snapshot.backend === 'gmail'
+      ? `UID ${item.uid}`
+      : `Message ID …${(item.messageId ?? '').slice(-12)}`;
+    return `${index + 1}. ${identity} · ${preview(item.from, fromLimit)} — ${preview(item.subject, subjectLimit)} — ${date}`;
   });
+  const sourceIdentity = snapshot.backend === 'gmail'
+    ? `${snapshot.sourcePath} · UIDVALIDITY ${snapshot.uidValidity}`
+    : `${snapshot.sourcePath} · immutable Microsoft message IDs`;
+  const destinationLabel = snapshot.backend === 'gmail' ? 'Gmail Trash' : 'Outlook Deleted Items';
   const text = [
     '🗑️ Mailbox Trash Request',
     '',
-    `Account: ${preview(snapshot.account, 320)}`,
-    `Source: ${snapshot.sourcePath} · UIDVALIDITY ${snapshot.uidValidity}`,
+    `Profile: ${preview(snapshot.profile, 32)} (${preview(snapshot.account, 320)})`,
+    `Source: ${sourceIdentity}`,
     `Destination: ${preview(snapshot.trashPath.replace(/[\r\n\t]+/g, ' '), 300)}`,
-    `Action: Move ${snapshot.items.length} exact message(s) to Gmail Trash`,
+    `Action: Move ${snapshot.items.length} exact message(s) to ${destinationLabel}`,
     'Permanent deletion/EXPUNGE: unavailable',
     '',
     ...itemLines,
@@ -263,13 +270,16 @@ export function buildMailboxUnsubscribePreview(
   snapshot: MailboxUnsubscribeSnapshot
 ): ApprovalPreview {
   const date = snapshot.receivedAt ? snapshot.receivedAt.slice(0, 10) : 'unknown date';
+  const messageIdentity = snapshot.backend === 'gmail'
+    ? `INBOX UID ${snapshot.uid} · UIDVALIDITY ${snapshot.uidValidity}`
+    : `Inbox message ID …${(snapshot.messageId ?? '').slice(-12)}`;
   const common = [
     '🚫 Unsubscribe Request',
     '',
-    `Account: ${preview(snapshot.account, 320)}`,
+    `Profile: ${preview(snapshot.profile, 32)} (${preview(snapshot.account, 320)})`,
     `From: ${preview(snapshot.from, 500)}`,
     `Message subject: ${preview(snapshot.subjectLine, 500)}`,
-    `Message: INBOX UID ${snapshot.uid} · UIDVALIDITY ${snapshot.uidValidity} · ${date}`
+    `Message: ${messageIdentity} · ${date}`
   ];
   let text: string;
   let canApprove = true;

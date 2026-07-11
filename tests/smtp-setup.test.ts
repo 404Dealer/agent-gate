@@ -88,6 +88,12 @@ test('SMTP setup CLI accepts only a Gmail preset and a non-secret config path', 
     provider: 'gmail',
     configPath: '/safe/config.yaml'
   });
+  assert.deepEqual(parseSmtpSetupArgs(['gmail', '--profile', 'personal']), {
+    provider: 'gmail',
+    configPath: '/opt/agent-gate/config/config.yaml',
+    profile: 'personal'
+  });
+  assert.throws(() => parseSmtpSetupArgs(['gmail', '--profile', 'UPPER']), /safe profile name/);
   assert.throws(() => parseSmtpSetupArgs(['custom']), /Provider must be gmail/);
   assert.throws(
     () => parseSmtpSetupArgs(['gmail', '--password', 'must-not-enter-argv']),
@@ -165,7 +171,8 @@ audit:
       password: 'gmail-app-password',
       fromAddress: 'owner@gmail.com',
       displayName: 'Hash Bringer',
-      setAsDefault: true
+      setAsDefault: true,
+      mailboxProfileName: 'personal'
     });
 
     assert.equal(stored.size, 1);
@@ -185,6 +192,7 @@ audit:
       displayName: 'Hash Bringer'
     });
     assert.equal(parsed.defaults.provider, 'gmail-smtp');
+    assert.deepEqual(parsed.mailboxProfiles.personal, { provider: 'gmail-smtp' });
     assert.equal((await lstat(configPath)).mode & 0o777, 0o600);
   } finally {
     await rm(dir, { recursive: true, force: true });

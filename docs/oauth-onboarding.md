@@ -145,6 +145,7 @@ http://localhost:8765/microsoft/oauth/callback
 4. Add delegated Microsoft Graph permissions:
    - `Mail.Send`
    - `User.Read`
+   - `Mail.ReadWrite` only when this registration will be used for a named mailbox profile
 5. Do not create a client secret; this is a native/public client.
 6. Leave **Allow public client flows** disabled unless the device-code fallback is required.
 
@@ -159,7 +160,14 @@ cd /opt/agent-gate
 sudo scripts/oauth-setup.sh outlook
 ```
 
-This uses authorization code + PKCE, state validation, and the exact `localhost` callback above. Tenant choices include:
+For bounded Inbox access, create a named profile instead. This explicitly requests delegated `Mail.ReadWrite` and atomically binds the resulting provider to the profile:
+
+```bash
+sudo scripts/oauth-setup.sh outlook --profile work
+sudo scripts/oauth-setup.sh outlook --profile consulting
+```
+
+Run onboarding once per Outlook/Microsoft 365 account. Ordinary Outlook onboarding without `--profile` remains send-only and does not request `Mail.ReadWrite`. Both browser flows use authorization code + PKCE, state validation, and the exact `localhost` callback above. Tenant choices include:
 
 | Tenant value | Intended accounts |
 |---|---|

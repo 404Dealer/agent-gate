@@ -10,12 +10,16 @@ import {
   configuredReadyFile,
   publishServiceReady
 } from './readiness.js';
-import { GmailInboxBroker, credentialsFromConfig } from './mailbox-broker/gmail-inbox.js';
+import { GmailInboxBroker } from './mailbox-broker/gmail-inbox.js';
 import { MailboxBrokerServer } from './mailbox-broker/server.js';
 import { submitTrashProposal } from './mailbox-broker/trash-proposal.js';
 import { submitUnsubscribeProposal } from './mailbox-broker/unsubscribe-proposal.js';
 import { GmailUnsubscribeService } from './mailbox-broker/gmail-unsubscribe.js';
 import { MAILBOX_SOCKET_PATH } from './mailbox-broker/protocol.js';
+import { mailboxProfilesFromConfig } from './mailbox-broker/profiles.js';
+import type { MailboxAdapter } from './mailbox-broker/adapter.js';
+import { OutlookMailboxAdapter } from './mailbox-broker/outlook-mailbox.js';
+import { getSharedOutlookTokenClient } from './providers/outlook-token-client.js';
 
 const configuredMailboxBroker = (config: AgentGateConfig): MailboxBrokerServer | null => {
   const socketPath = process.env.AGENT_GATE_MAILBOX_SOCKET;
@@ -23,17 +27,51 @@ const configuredMailboxBroker = (config: AgentGateConfig): MailboxBrokerServer |
   if (socketPath !== MAILBOX_SOCKET_PATH) throw new Error('Mailbox broker socket path is not fixed');
   const gidRaw = process.env.AGENT_GATE_MAILBOX_GID;
   if (!gidRaw || !/^[1-9][0-9]*$/.test(gidRaw)) throw new Error('Mailbox broker group is not configured');
-  const credentials = credentialsFromConfig(config);
-  if (!credentials) return null;
-  const unsubscribe = new GmailUnsubscribeService(credentials);
+  const profiles = mailboxProfilesFromConfig(config);
+  if (profiles.size === 0) return null;
+  const adapters = new Map<string, MailboxAdapter>();
+  const prepareUnsubscribe = new Map<string, (ref: string) => Promise<unknown>>();
+  for (const profile of profiles.values()) {
+    if (profile.backend === 'gmail') {
+      adapters.set(profile.name, new GmailInboxBroker(
+        profile.credentials,
+        profile.name,
+        profile.providerName,
+        profile.address
+      ));
+      const unsubscribe = new GmailUnsubscribeService(
+        profile.credentials,
+        profile.name,
+        profile.providerName,
+        profile.address
+      );
+      prepareUnsubscribe.set(profile.name, (ref) => unsubscribe.prepareReference(ref));
+    } else {
+      const adapter = new OutlookMailboxAdapter(
+        profile.name,
+        profile.providerName,
+        profile.providerConfig,
+        getSharedOutlookTokenClient(profile.providerConfig)
+      );
+      adapters.set(profile.name, adapter);
+      prepareUnsubscribe.set(profile.name, (ref) => adapter.prepareUnsubscribeReference(ref));
+    }
+  }
   return new MailboxBrokerServer(
-    new GmailInboxBroker(credentials),
+    adapters,
     socketPath,
     Number(gidRaw),
-    (refs, context) => submitTrashProposal(config.watch.directory, refs, context),
-    async (ref, context) => {
-      await unsubscribe.prepareReference(ref);
-      return submitUnsubscribeProposal(config.watch.directory, ref, context);
+    (profileName, refs, context) => {
+      const profile = profiles.get(profileName);
+      if (!profile) throw new Error('Mailbox profile is not configured');
+      return submitTrashProposal(config.watch.directory, refs, context, profile.providerName);
+    },
+    async (profileName, ref, context) => {
+      const profile = profiles.get(profileName);
+      const prepare = prepareUnsubscribe.get(profileName);
+      if (!profile || !prepare) throw new Error('Mailbox profile is not configured');
+      await prepare(ref);
+      return submitUnsubscribeProposal(config.watch.directory, ref, context, profile.providerName);
     }
   );
 };

@@ -5,6 +5,7 @@ export interface OAuthSetupOptions {
   configPath: string;
   port: number;
   deviceCode: boolean;
+  profile?: string;
 }
 
 export function parseOAuthSetupArgs(args: string[]): OAuthSetupOptions {
@@ -16,11 +17,20 @@ export function parseOAuthSetupArgs(args: string[]): OAuthSetupOptions {
   let configPath = '/opt/agent-gate/config/config.yaml';
   let port = 8765;
   let deviceCode = false;
+  let profile: string | undefined;
 
   for (let index = 0; index < rest.length; index += 1) {
     const option = rest[index];
     if (option === '--device-code') {
       deviceCode = true;
+      continue;
+    }
+    if (option === '--profile') {
+      const value = rest[++index];
+      if (!value || !/^[a-z][a-z0-9-]{0,31}$/.test(value)) {
+        throw new Error('--profile requires a safe profile name');
+      }
+      profile = value;
       continue;
     }
     if (option === '--config') {
@@ -44,5 +54,8 @@ export function parseOAuthSetupArgs(args: string[]): OAuthSetupOptions {
   if (deviceCode && providerValue !== 'outlook') {
     throw new Error('--device-code is only valid for outlook');
   }
-  return { provider: providerValue, configPath, port, deviceCode };
+  if (profile && providerValue !== 'outlook') {
+    throw new Error('--profile is only valid for outlook; use agent-gate-smtp-setup for Gmail mailbox profiles');
+  }
+  return { provider: providerValue, configPath, port, deviceCode, ...(profile ? { profile } : {}) };
 }

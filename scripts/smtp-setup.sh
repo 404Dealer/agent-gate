@@ -15,7 +15,7 @@ CONFIG_PATH="$INSTALL_DIR/config/config.yaml"
 
 usage() {
   cat <<USAGE
-Usage: sudo $0 gmail
+Usage: sudo $0 gmail [--profile NAME]
 
 This wrapper:
   1. verifies that its installed path is root-owned and not writable by non-root users;

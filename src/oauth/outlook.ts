@@ -1,7 +1,9 @@
 import { isSafeEmailAddress, sanitizeMetadataText } from './metadata.js';
 
-const OUTLOOK_SCOPES = 'offline_access Mail.Send User.Read';
-const OUTLOOK_REQUIRED_RESOURCE_SCOPES = ['Mail.Send', 'User.Read'] as const;
+const outlookScopes = (mailboxAccess = false): string =>
+  mailboxAccess
+    ? 'offline_access Mail.Send Mail.ReadWrite User.Read'
+    : 'offline_access Mail.Send User.Read';
 const OAUTH_FETCH_TIMEOUT_MS = 30_000;
 
 const tenantSegment = (tenantId: string): string => {
@@ -26,10 +28,11 @@ const assertOutlookLoopbackRedirect = (redirectUri: string): void => {
   }
 };
 
-const assertOutlookScopes = (scopeValue: unknown): void => {
+const assertOutlookScopes = (scopeValue: unknown, mailboxAccess = false): void => {
   if (typeof scopeValue !== 'string') throw new Error('Outlook token response did not return approved scopes');
   const returned = scopeValue.split(/\s+/).filter(Boolean).map((scope) => scope.toLowerCase());
-  for (const required of OUTLOOK_REQUIRED_RESOURCE_SCOPES) {
+  const requiredScopes = mailboxAccess ? ['Mail.Send', 'Mail.ReadWrite', 'User.Read'] : ['Mail.Send', 'User.Read'];
+  for (const required of requiredScopes) {
     const expected = required.toLowerCase();
     if (!returned.some((scope) => scope === expected || scope.endsWith(`/${expected}`))) {
       throw new Error(`Outlook token response is missing required scope: ${required}`);
@@ -43,6 +46,7 @@ interface OutlookAuthorizationUrlOptions {
   redirectUri: string;
   state: string;
   codeChallenge: string;
+  mailboxAccess?: boolean;
 }
 
 export function buildOutlookAuthorizationUrl(options: OutlookAuthorizationUrlOptions): string {
@@ -53,7 +57,7 @@ export function buildOutlookAuthorizationUrl(options: OutlookAuthorizationUrlOpt
     redirect_uri: options.redirectUri,
     response_type: 'code',
     response_mode: 'query',
-    scope: OUTLOOK_SCOPES,
+    scope: outlookScopes(options.mailboxAccess),
     code_challenge: options.codeChallenge,
     code_challenge_method: 'S256',
     state: options.state,
@@ -68,6 +72,7 @@ interface OutlookCodeExchangeOptions {
   code: string;
   codeVerifier: string;
   redirectUri: string;
+  mailboxAccess?: boolean;
 }
 
 interface OAuthTokenPair {
@@ -91,7 +96,7 @@ export async function exchangeOutlookAuthorizationCode(
       code_verifier: options.codeVerifier,
       redirect_uri: options.redirectUri,
       grant_type: 'authorization_code',
-      scope: OUTLOOK_SCOPES
+      scope: outlookScopes(options.mailboxAccess)
     }),
     signal: AbortSignal.timeout(OAUTH_FETCH_TIMEOUT_MS)
   });
@@ -111,13 +116,14 @@ export async function exchangeOutlookAuthorizationCode(
   if (typeof body.refresh_token !== 'string' || !body.refresh_token) {
     throw new Error('Outlook OAuth token exchange did not return a refresh_token');
   }
-  if (body.scope !== undefined) assertOutlookScopes(body.scope);
+  if (body.scope !== undefined) assertOutlookScopes(body.scope, options.mailboxAccess);
   return { accessToken: body.access_token, refreshToken: body.refresh_token };
 }
 
 interface OutlookDeviceCodeOptions {
   clientId: string;
   tenantId: string;
+  mailboxAccess?: boolean;
 }
 
 export interface OutlookDeviceAuthorization {
@@ -138,7 +144,7 @@ export async function requestOutlookDeviceCode(
     method: 'POST',
     redirect: 'error',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ client_id: options.clientId, scope: OUTLOOK_SCOPES }),
+    body: new URLSearchParams({ client_id: options.clientId, scope: outlookScopes(options.mailboxAccess) }),
     signal: AbortSignal.timeout(OAUTH_FETCH_TIMEOUT_MS)
   });
 
@@ -193,6 +199,7 @@ interface OutlookDeviceTokenOptions {
   deviceCode: string;
   expiresIn: number;
   interval: number;
+  mailboxAccess?: boolean;
 }
 
 type SleepFn = (milliseconds: number) => Promise<void>;
@@ -246,7 +253,7 @@ export async function pollOutlookDeviceToken(
       if (typeof body.refresh_token !== 'string' || !body.refresh_token) {
         throw new Error('Outlook device token response did not return a refresh_token');
       }
-      if (body.scope !== undefined) assertOutlookScopes(body.scope);
+      if (body.scope !== undefined) assertOutlookScopes(body.scope, options.mailboxAccess);
       return { accessToken: body.access_token, refreshToken: body.refresh_token };
     }
 

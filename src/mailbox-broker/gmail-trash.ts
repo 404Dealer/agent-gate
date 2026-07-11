@@ -3,7 +3,7 @@ import { buildGmailImapOptions } from '../mailbox/gmail-imap.js';
 import { selectAuthoritativeMailbox } from '../mailbox/cleanup.js';
 import type { MailboxTrashDraft } from '../schema.js';
 import type { BrokerCredentials } from './gmail-inbox.js';
-import { decodeUniqueInboxReferences } from './reference.js';
+import { decodeUniqueGmailInboxReferences } from './reference.js';
 
 class SafeTrashError extends Error {}
 
@@ -18,15 +18,18 @@ export class NativeMoveOnlyImapFlow extends ImapFlow {
 }
 
 export interface TrashPreviewItem {
-  uid: number;
+  uid?: number;
+  messageId?: string;
   from: string;
   subject: string;
   receivedAt: string | null;
   size: number | null;
 }
 
-export interface MailboxTrashSnapshot {
-  provider: 'gmail-smtp';
+export interface GmailMailboxTrashSnapshot {
+  backend: 'gmail';
+  provider: string;
+  profile: string;
   account: string;
   sourcePath: 'INBOX';
   trashPath: string;
@@ -35,12 +38,25 @@ export interface MailboxTrashSnapshot {
   items: TrashPreviewItem[];
 }
 
+export interface OutlookMailboxTrashSnapshot {
+  backend: 'outlook';
+  provider: string;
+  profile: string;
+  account: string;
+  sourcePath: 'Inbox';
+  trashPath: 'Deleted Items';
+  messageIds: string[];
+  items: TrashPreviewItem[];
+}
+
+export type MailboxTrashSnapshot = GmailMailboxTrashSnapshot | OutlookMailboxTrashSnapshot;
+
 export type MailboxTrashResult =
   | { outcome: 'moved'; requestedCount: number; verifiedMovedCount: number; details: string }
   | { outcome: 'move-partial'; requestedCount: number; verifiedMovedCount: number; details: string };
 
 export function classifyMailboxMoveResult(
-  snapshot: MailboxTrashSnapshot,
+  snapshot: GmailMailboxTrashSnapshot,
   result: CopyResponseObject | false
 ): MailboxTrashResult {
   if (!result || result.path !== snapshot.sourcePath || result.destination !== snapshot.trashPath || !(result.uidMap instanceof Map)) {
@@ -102,7 +118,18 @@ const exactFetched = (fetched: FetchMessageObject[], uids: readonly number[]): M
 };
 
 export class GmailMailboxTrashService {
-  constructor(private readonly credentials: BrokerCredentials) {}
+  constructor(
+    private readonly credentials: BrokerCredentials,
+    private readonly profile = 'default',
+    private readonly providerName = 'gmail-smtp',
+    private readonly address = credentials.username
+  ) {}
+
+  private assertProfile(refs: ReturnType<typeof decodeUniqueGmailInboxReferences>): void {
+    if (refs.some((ref) => ref.v === 2 ? ref.profile !== this.profile : this.providerName !== 'gmail-smtp')) {
+      throw new SafeTrashError('Mailbox reference belongs to a different profile');
+    }
+  }
 
   private async withClient<T>(operation: (client: ImapFlow) => Promise<T>): Promise<T> {
     const client = new NativeMoveOnlyImapFlow(buildGmailImapOptions(this.credentials));
@@ -124,8 +151,9 @@ export class GmailMailboxTrashService {
   }
 
   async prepare(draft: MailboxTrashDraft): Promise<MailboxTrashSnapshot> {
-    if (draft.provider !== 'gmail-smtp') throw new SafeTrashError('Mailbox Trash requires the gmail-smtp provider');
-    const refs = decodeUniqueInboxReferences(draft.payload.refs);
+    if (draft.provider !== this.providerName) throw new SafeTrashError('Mailbox reference belongs to a different profile');
+    const refs = decodeUniqueGmailInboxReferences(draft.payload.refs);
+    this.assertProfile(refs);
     const uidValidity = refs[0].uidValidity;
     const uids = refs.map((ref) => ref.uid);
 
@@ -147,8 +175,10 @@ export class GmailMailboxTrashService {
         );
         const byUid = exactFetched(fetched, uids);
         return {
-          provider: 'gmail-smtp',
-          account: cleanLine(this.credentials.username, 320),
+          backend: 'gmail',
+          provider: this.providerName,
+          profile: this.profile,
+          account: cleanLine(this.address, 320),
           sourcePath: 'INBOX',
           trashPath: trash.path,
           uidValidity,
@@ -171,6 +201,9 @@ export class GmailMailboxTrashService {
   }
 
   async execute(snapshot: MailboxTrashSnapshot): Promise<MailboxTrashResult> {
+    if (snapshot.backend !== 'gmail' || snapshot.provider !== this.providerName || snapshot.profile !== this.profile || snapshot.account !== cleanLine(this.address, 320)) {
+      throw new SafeTrashError('Mailbox reference belongs to a different profile');
+    }
     return this.withClient(async (client) => {
       if (!client.capabilities.has('MOVE') || !client.capabilities.has('UIDPLUS')) {
         throw new SafeTrashError('Gmail server does not advertise safe MOVE and UIDPLUS support');

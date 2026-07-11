@@ -15,7 +15,7 @@ CONFIG_PATH="$INSTALL_DIR/config/config.yaml"
 
 usage() {
   cat <<USAGE
-Usage: sudo $0 <gmail|outlook|zoho> [--port PORT] [--device-code]
+Usage: sudo $0 <gmail|outlook|zoho> [--profile NAME] [--port PORT] [--device-code]
 
 This wrapper:
   1. verifies that its installed path is root-owned and not writable by non-root users;

@@ -22,7 +22,7 @@ export const WebhookPayloadSchema = z.object({
 });
 
 export const MailboxTrashPayloadSchema = z.object({
-  refs: z.array(z.string().regex(/^[A-Za-z0-9_-]{8,256}$/)).min(1).max(20)
+  refs: z.array(z.string().regex(/^[A-Za-z0-9_-]{8,4096}$/)).min(1).max(20)
 }).strict().superRefine((payload, ctx) => {
   try {
     decodeUniqueInboxReferences(payload.refs);
@@ -36,7 +36,7 @@ export const MailboxTrashPayloadSchema = z.object({
 });
 
 export const MailboxUnsubscribePayloadSchema = z.object({
-  ref: z.string().regex(/^[A-Za-z0-9_-]{8,256}$/)
+  ref: z.string().regex(/^[A-Za-z0-9_-]{8,4096}$/)
 }).strict().superRefine((payload, ctx) => {
   try {
     decodeInboxReference(payload.ref);
