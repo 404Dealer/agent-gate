@@ -230,7 +230,6 @@ providers:
     tenantId: "common"
     fromAddress: "you@outlook.com"
     displayName: "Your Name"
-    mailboxAccess: true # Named mailbox profiles require delegated Mail.ReadWrite.
 
   zoho:
     type: "email-zoho"
@@ -247,8 +246,6 @@ providers:
 mailboxProfiles:
   personal:
     provider: gmail-smtp
-  work:
-    provider: outlook
 
 defaults:
   provider: "log"
@@ -260,7 +257,24 @@ audit:
   logFile: "./audit.log"
 ```
 
-Each mailbox profile maps one account to one provider. The installed Gmail and Outlook onboarding helpers create these provider/profile bindings atomically when called with `--profile NAME`; you do not need to edit private production config by hand.
+Each mailbox profile maps one account to one provider. The base `outlook` provider above is send-only. A manually configured named Outlook mailbox is an explicit opt-in:
+
+```yaml
+providers:
+  outlook-work:
+    type: "email-outlook"
+    clientId: "${MICROSOFT_WORK_CLIENT_ID}"
+    refreshToken: "${MICROSOFT_WORK_REFRESH_TOKEN}"
+    tenantId: "common"
+    fromAddress: "you@outlook.com"
+    mailboxAccess: true # Requires delegated Mail.ReadWrite.
+
+mailboxProfiles:
+  work:
+    provider: outlook-work
+```
+
+For production, run `sudo /opt/agent-gate/scripts/oauth-setup.sh outlook --profile work`. The installed helper requests the required mailbox scope and creates the provider/profile binding atomically; you do not need to edit private production config by hand.
 
 ### Secrets
 
@@ -486,10 +500,12 @@ agent-gate/
 │   ├── denied/           # Human-denied
 │   └── failed/           # Validation or send errors
 ├── docs/
-│   ├── deployment.md       # Production hardening guide
-│   ├── hermes.md           # Hermes mailbox and approval workflow
-│   ├── oauth-onboarding.md # Gmail, Outlook, and Zoho OAuth setup
-│   └── smtp-onboarding.md  # Gmail App Password setup
+│   ├── credential-handoff.md # Operator and agent credential boundaries
+│   ├── deployment.md         # Production hardening guide
+│   ├── hermes.md             # Hermes mailbox and approval workflow
+│   ├── mailbox-cleanup.md    # Gmail Spam/Trash unread cleanup
+│   ├── oauth-onboarding.md   # Gmail, Outlook, and Zoho OAuth setup
+│   └── smtp-onboarding.md    # Gmail App Password setup
 ├── config.example.yaml
 ├── package.json
 ├── tsconfig.json
