@@ -3,6 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-22%2B-green.svg)](https://nodejs.org/)
+[![CI](https://github.com/404Dealer/agent-gate/actions/workflows/ci.yml/badge.svg)](https://github.com/404Dealer/agent-gate/actions/workflows/ci.yml)
 
 Credential-isolated approval layer between AI agents and external actions, with bounded multi-account Gmail/Outlook triage and Telegram-approved send, Trash, and unsubscribe operations.
 
@@ -16,7 +17,7 @@ AI agents with email and API access are a prompt injection timebomb. Current mit
 - **"Restrict the agent's tools"** — if it can draft AND confirm, it can still send anything.
 - **"Remove access entirely"** — then what's the point of having an agent?
 
-agent-gate enforces a **structural** control plane that no amount of prompt injection can bypass.
+When deployed with the isolation requirements below, agent-gate enforces a **structural** control plane that prompt injection alone cannot bypass.
 
 ## How It Works
 
@@ -42,11 +43,11 @@ agent-gate is only a **hard security boundary** when these requirements are true
 |-------------|----------------|
 | agent-gate runs as a separate OS user | Prevents the AI agent process from reading/modifying pending or approved drafts |
 | The agent has write-only access to the inbox | The agent can propose drafts but cannot list, read, edit, delete, or replace drafts after submission |
-| Send credentials live only in agent-gate | If the agent also has SMTP/Gmail/Zoho send credentials, it can bypass the gate |
+| Send credentials live only in agent-gate | If the agent also has SMTP, Gmail, Outlook, or Zoho send credentials, it can bypass the gate |
 | The approval bot token is not available to the agent | Prevents the agent from approving its own drafts |
 | Gmail/Outlook mailbox access is exposed only through the bounded Unix-socket broker | Keeps Gmail App Passwords, Outlook OAuth tokens, arbitrary IMAP commands, and unrestricted Graph calls outside the agent process |
 | `security.enforceProductionPermissions: true` in production | Fails closed if the write-only inbox/private state directories are misconfigured |
-| Humans review the actual outbound payload | The approval decision is about the concrete email/webhook body, recipients, provider, and context |
+| Humans review the actual action | The approval decision is about the concrete email payload or exact mailbox operation shown in Telegram |
 
 If you run agent-gate and your agent as the same Unix user, or give the agent direct send credentials, agent-gate is still useful as an approval workflow — but it is **not** a structural security boundary.
 
@@ -58,11 +59,11 @@ Hermes Agent already has useful approval controls for tool and command risk. age
 
 | Capability | Hermes built-in approval | agent-gate |
 |------------|--------------------------|------------|
-| Primary approval target | Tool calls / shell commands | Exact outbound payloads |
-| Typical question | “Should this command/tool run?” | “Should this exact email/webhook be sent?” |
+| Primary approval target | Tool calls / shell commands | Exact email payloads and mailbox operations |
+| Typical question | “Should this command/tool run?” | “Should this email be sent, or should this exact message be moved or unsubscribed?” |
 | Final executor | Hermes tool runtime | Separate deterministic service |
 | Send credentials | May live in Hermes if configured | Live only in agent-gate |
-| Best for | Dangerous local commands, tool use, operational actions | Email, replies, webhooks, API calls, external side effects |
+| Best for | Dangerous local commands, tool use, operational actions | Email, replies, and bounded mailbox actions |
 | Security shape | Tool-level/behavioral approval | Payload-level structural boundary |
 
 For example, Hermes approval can help decide whether a risky command should run. agent-gate is for a different problem: Hermes drafts an email, but a separate process with separate credentials sends only the exact payload a human approved.
@@ -83,12 +84,14 @@ This isn't "we told the AI to be careful." It's structural:
 
 ## Quick Start
 
+This path is for local evaluation and development. It does not create the separate-user security boundary described above. Use [docs/deployment.md](docs/deployment.md) and the installed credential-onboarding wrappers for production.
+
 ```bash
 git clone https://github.com/404Dealer/agent-gate.git
 cd agent-gate
-npm install
+npm ci
 cp config.example.yaml config.yaml
-# Edit config.yaml with your bot token and provider credentials
+# Set the environment variables referenced by config.yaml.
 npm run build
 npm start
 ```
@@ -97,7 +100,7 @@ npm start
 
 1. Message [@BotFather](https://t.me/BotFather) on Telegram
 2. Send `/newbot` and follow the prompts
-3. Copy the bot token into your `config.yaml`
+3. For local development, resolve the bot-token placeholder through your environment. For production, use `sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram`; do not place a literal token in config.
 4. Get your Telegram user ID (message [@userinfobot](https://t.me/userinfobot)) and add it to `allowedUsers`
 5. Send `/start` to your new bot
 
@@ -156,7 +159,7 @@ That's it. agent-gate handles the rest.
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
 | `id` | UUID string | ✅ | Unique draft identifier |
-| `type` | `"email"` \| `"webhook"` | ✅ | Action type |
+| `type` | `"email"` \| `"webhook"` | ✅ | `webhook` is schema-reserved; no executing webhook provider ships yet |
 | `status` | `"pending"` | ✅ | Must be `"pending"` for new drafts |
 | `createdAt` | ISO 8601 | ✅ | |
 | `updatedAt` | ISO 8601 | ✅ | |
@@ -227,6 +230,7 @@ providers:
     tenantId: "common"
     fromAddress: "you@outlook.com"
     displayName: "Your Name"
+    mailboxAccess: true # Named mailbox profiles require delegated Mail.ReadWrite.
 
   zoho:
     type: "email-zoho"
@@ -240,6 +244,12 @@ providers:
   log:
     type: "log-only"
 
+mailboxProfiles:
+  personal:
+    provider: gmail-smtp
+  work:
+    provider: outlook
+
 defaults:
   provider: "log"
   timezone: "UTC"
@@ -249,6 +259,8 @@ audit:
   enabled: true
   logFile: "./audit.log"
 ```
+
+Each mailbox profile maps one account to one provider. The installed Gmail and Outlook onboarding helpers create these provider/profile bindings atomically when called with `--profile NAME`; you do not need to edit private production config by hand.
 
 ### Secrets
 
@@ -268,7 +280,10 @@ For the Himalaya-style self-hosted path, no Google Cloud project or OAuth client
 ```bash
 # Human-controlled terminal only
 sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
+# Existing one-account compatibility setup:
 sudo /opt/agent-gate/scripts/smtp-setup.sh gmail
+# Or create a named Gmail mailbox (repeat with a unique profile per account):
+sudo /opt/agent-gate/scripts/smtp-setup.sh gmail --profile personal
 ```
 
 The SMTP helper verifies Gmail over TLS, stores the App Password directly under `agentgate`, writes only a versioned `${PASS:...}` reference to private config, and restarts the service. App Passwords are simpler but broader than the Gmail API `gmail.send` scope. See **[docs/smtp-onboarding.md](docs/smtp-onboarding.md)** for prerequisites, revocation, and exact behavior.
@@ -356,7 +371,7 @@ Sends email via the [Gmail API](https://developers.google.com/gmail/api/referenc
 
 ### `email-outlook`
 
-Sends email via [Microsoft Graph sendMail](https://learn.microsoft.com/en-us/graph/api/user-sendmail) using Microsoft Entra OAuth refresh token flow. Secure onboarding requests delegated `offline_access`, `Mail.Send`, and onboarding-only `User.Read` scopes.
+Sends email via [Microsoft Graph sendMail](https://learn.microsoft.com/en-us/graph/api/user-sendmail) using Microsoft Entra OAuth refresh token flow. Send-only onboarding requests delegated `offline_access`, `Mail.Send`, and onboarding-only `User.Read`. Named mailbox-profile onboarding also requests `Mail.ReadWrite` for the bounded Inbox adapter.
 
 | Config Key | Description |
 |------------|-------------|
@@ -437,7 +452,7 @@ For maximum isolation, run agent-gate as a dedicated system user:
 2. **Set up credentials** — dedicated `pass` store for the service user
 3. **Inbox as dropbox** — sticky bit + group write, no read (`1730`)
 4. **systemd service** — hardened with `NoNewPrivileges`, `ProtectSystem=strict`, restricted address families
-5. **Audit log** — read-only ACL for your main user
+5. **Audit log** — private by default; an operator may explicitly grant a read-only ACL with `--grant-agent-audit-read`
 
 See **[docs/deployment.md](docs/deployment.md)** for the complete production hardening guide with copy-paste commands.
 
@@ -454,13 +469,15 @@ agent-gate/
 │   ├── bot.ts            # Telegram bot (previews + callbacks)
 │   ├── executor.ts       # Reads approved drafts, dispatches to providers
 │   ├── schema.ts         # Zod schemas + validation
-│   ├── mailbox-broker/   # Bounded INBOX, Trash, and unsubscribe capabilities
+│   ├── mailbox-broker/   # Named Gmail/Outlook INBOX, Trash, and unsubscribe broker
 │   └── providers/
-│       ├── index.ts       # Provider registry
-│       ├── email-gmail.ts  # Gmail API
-│       ├── email-outlook.ts # Microsoft Graph sendMail
-│       ├── email-zoho.ts   # Zoho Mail API
-│       └── log-only.ts    # Dry-run logger
+│       ├── index.ts                 # Provider registry
+│       ├── email-smtp.ts            # Authenticated SMTP / Gmail App Passwords
+│       ├── email-gmail.ts           # Gmail API
+│       ├── email-outlook.ts         # Microsoft Graph sendMail
+│       ├── outlook-token-client.ts  # Shared Microsoft token rotation and Graph client
+│       ├── email-zoho.ts            # Zoho Mail API
+│       └── log-only.ts              # Dry-run logger
 ├── drafts/               # Draft queue directories
 │   ├── inbox/            # Public dropbox (agents write here)
 │   ├── pending/          # Internal (watcher moves files here)
@@ -469,7 +486,10 @@ agent-gate/
 │   ├── denied/           # Human-denied
 │   └── failed/           # Validation or send errors
 ├── docs/
-│   └── deployment.md     # Production hardening guide
+│   ├── deployment.md       # Production hardening guide
+│   ├── hermes.md           # Hermes mailbox and approval workflow
+│   ├── oauth-onboarding.md # Gmail, Outlook, and Zoho OAuth setup
+│   └── smtp-onboarding.md  # Gmail App Password setup
 ├── config.example.yaml
 ├── package.json
 ├── tsconfig.json
@@ -484,6 +504,7 @@ agent-gate/
 - ✅ Telegram bot with inline approve/deny buttons
 - ✅ SHA-256 hash-verified approvals with nonce-bound callbacks
 - ✅ Gmail email provider
+- ✅ Authenticated TLS SMTP provider and Gmail App Password onboarding
 - ✅ Outlook / Microsoft Graph email provider
 - ✅ Zoho Mail email provider
 - ✅ Direct-to-`agentgate` browser/device OAuth onboarding for Gmail, Outlook, and Zoho
@@ -498,6 +519,7 @@ agent-gate/
 - ✅ Credential-isolated named Gmail/Outlook Inbox list/read/mark-read broker for Hermes
 - ✅ Telegram-approved Gmail Trash and Outlook Deleted Items moves with no permanent-delete path
 - ✅ Standards-based HTTPS/mailto unsubscribe with no body-link execution
+- ✅ Human-confirmed Gmail Spam/Trash unread cleanup with no message deletion or display
 
 ### Planned
 
@@ -514,7 +536,7 @@ agent-gate/
 
 The agent security space is full of behavioral guardrails — system prompts, content filters, output classifiers. These are valuable but fundamentally brittle: they depend on model compliance, which prompt injection can subvert.
 
-agent-gate takes a different approach: **structural security**. The approval gate is a separate process, running as a separate user, with its own credentials. No amount of prompt injection can make the AI agent approve its own drafts, because the approval channel is physically separated from the agent's runtime.
+agent-gate takes a different approach: **structural security**. The approval gate is a separate process, running as a separate user, with its own credentials. When the deployment requirements above hold, prompt injection alone cannot make the AI agent approve its own drafts because the agent cannot access the approval channel or execution credentials.
 
 This is the same principle behind air-gapped networks, hardware security modules, and two-person integrity controls — applied to AI agents.
 
