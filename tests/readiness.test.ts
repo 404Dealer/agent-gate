@@ -12,15 +12,15 @@ import {
 
 test('production readiness path is fixed and optional outside systemd', () => {
   assert.equal(configuredReadyFile({}), undefined);
-  assert.equal(configuredReadyFile({ AGENT_GATE_READY_FILE: SERVICE_READY_FILE }), SERVICE_READY_FILE);
+  assert.equal(configuredReadyFile({ NIGHTDROP_READY_FILE: SERVICE_READY_FILE }), SERVICE_READY_FILE);
   assert.throws(
-    () => configuredReadyFile({ AGENT_GATE_READY_FILE: '/tmp/attacker-ready' }),
+    () => configuredReadyFile({ NIGHTDROP_READY_FILE: '/tmp/attacker-ready' }),
     /fixed production readiness path/
   );
 });
 
 test('readiness publication is exclusive, PID-bound, private, and symlink-safe', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-ready-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-ready-'));
   try {
     const readyPath = join(dir, 'ready');
     await publishServiceReady(readyPath, 4321);

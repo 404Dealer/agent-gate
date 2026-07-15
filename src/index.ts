@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { dirname, resolve } from 'node:path';
-import { loadConfig, type AgentGateConfig } from './config.js';
+import { loadConfig, type NightdropConfig } from './config.js';
 import { DraftWatcher } from './watcher.js';
-import { AgentGateBot } from './bot.js';
+import { NightdropBot } from './bot.js';
 import { Executor } from './executor.js';
 import { formatIsolationReport, verifyDraftDirectoryIsolation } from './security.js';
 import {
@@ -21,11 +21,11 @@ import type { MailboxAdapter } from './mailbox-broker/adapter.js';
 import { OutlookMailboxAdapter } from './mailbox-broker/outlook-mailbox.js';
 import { getSharedOutlookTokenClient } from './providers/outlook-token-client.js';
 
-const configuredMailboxBroker = (config: AgentGateConfig): MailboxBrokerServer | null => {
-  const socketPath = process.env.AGENT_GATE_MAILBOX_SOCKET;
+const configuredMailboxBroker = (config: NightdropConfig): MailboxBrokerServer | null => {
+  const socketPath = process.env.NIGHTDROP_MAILBOX_SOCKET;
   if (socketPath === undefined) return null;
   if (socketPath !== MAILBOX_SOCKET_PATH) throw new Error('Mailbox broker socket path is not fixed');
-  const gidRaw = process.env.AGENT_GATE_MAILBOX_GID;
+  const gidRaw = process.env.NIGHTDROP_MAILBOX_GID;
   if (!gidRaw || !/^[1-9][0-9]*$/.test(gidRaw)) throw new Error('Mailbox broker group is not configured');
   const profiles = mailboxProfilesFromConfig(config);
   if (profiles.size === 0) return null;
@@ -99,30 +99,30 @@ async function main(): Promise<void> {
   });
 
   const executor = new Executor(config, draftsRoot);
-  const bot = new AgentGateBot(config, watcher, executor, draftsRoot);
+  const bot = new NightdropBot(config, watcher, executor, draftsRoot);
 
   await bot.start();
-  console.log('[agent-gate] bot handlers registered');
+  console.log('[nightdrop] bot handlers registered');
 
   await watcher.replayPending();
   await watcher.start();
-  console.log('[agent-gate] watcher ready, watching', config.watch.directory);
+  console.log('[nightdrop] watcher ready, watching', config.watch.directory);
 
   const mailboxBroker = configuredMailboxBroker(config);
   if (mailboxBroker) {
     await mailboxBroker.start();
-    console.log('[agent-gate] mailbox broker listening');
+    console.log('[nightdrop] mailbox broker listening');
   }
 
   bot.poll().catch(async (err) => {
-    console.error('[agent-gate] bot polling error:', err);
+    console.error('[nightdrop] bot polling error:', err);
     await clearServiceReady(readyFile).catch(() => undefined);
     await mailboxBroker?.stop().catch(() => undefined);
     process.exit(1);
   });
 
   const shutdown = async (signal: string): Promise<void> => {
-    console.log(`[agent-gate] received ${signal}, shutting down...`);
+    console.log(`[nightdrop] received ${signal}, shutting down...`);
     await clearServiceReady(readyFile).catch(() => undefined);
     await mailboxBroker?.stop().catch(() => undefined);
     await bot.stop();
@@ -134,14 +134,14 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
 
   await publishServiceReady(readyFile);
-  console.log('[agent-gate] ready ✓');
+  console.log('[nightdrop] ready ✓');
 }
 
 if (process.argv.slice(2).includes('--help')) {
-  console.log('Usage: agent-gate\n\nStarts the agent-gate approval service using AGENT_GATE_CONFIG or ./config.yaml.');
+  console.log('Usage: nightdrop\n\nStarts the Nightdrop approval service using NIGHTDROP_CONFIG or ./config.yaml.');
 } else {
   main().catch((error) => {
-    console.error('[agent-gate] fatal:', error);
+    console.error('[nightdrop] fatal:', error);
     process.exit(1);
   });
 }

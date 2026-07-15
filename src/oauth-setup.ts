@@ -16,7 +16,7 @@ import { PassSecretStore } from './oauth/secret-store.js';
 import { parseSelection, sanitizeTerminalText } from './oauth/selection.js';
 import { buildZohoAuthorizationUrl, exchangeZohoAuthorizationCode, fetchZohoSenderChoices, parseZohoRegion, validateZohoCallbackRegion } from './oauth/zoho.js';
 
-const usage = (): string => `Usage: agent-gate-oauth <gmail|outlook|zoho> [--profile NAME] [--config PATH] [--port PORT] [--device-code]
+const usage = (): string => `Usage: nightdrop-oauth <gmail|outlook|zoho> [--profile NAME] [--config PATH] [--port PORT] [--device-code]
 
 Browser authorization with PKCE is the default. --device-code is an Outlook-only fallback.
 Run this only through scripts/oauth-setup.sh from a human-controlled SSH/local terminal.
@@ -28,18 +28,18 @@ async function assertSecureRuntime(configPath: string): Promise<void> {
   }
   const uid = process.getuid?.();
   if (uid === undefined || uid === 0) {
-    throw new Error('OAuth setup must run as the isolated agentgate user, never as root');
+    throw new Error('OAuth setup must run as the isolated nightdrop user, never as root');
   }
 
   const stat = await lstat(configPath);
   if (!stat.isFile() || stat.isSymbolicLink()) {
-    throw new Error('Agent-gate config must be a regular file, not a symlink');
+    throw new Error('Nightdrop config must be a regular file, not a symlink');
   }
   if (stat.uid !== uid) {
-    throw new Error('Agent-gate config must be owned by the OAuth setup user');
+    throw new Error('Nightdrop config must be owned by the OAuth setup user');
   }
   if ((stat.mode & 0o777) !== 0o600) {
-    throw new Error('Agent-gate config must have mode 0600 before OAuth setup');
+    throw new Error('Nightdrop config must have mode 0600 before OAuth setup');
   }
 }
 

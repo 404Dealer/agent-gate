@@ -4,14 +4,14 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentGateConfig } from '../src/config.js';
+import type { NightdropConfig } from '../src/config.js';
 import { Executor } from '../src/executor.js';
 import { buildDeliveryNotification, executeAndNotifyDelivery } from '../src/bot.js';
 import type { Provider, ProviderResult } from '../src/providers/index.js';
 import { DraftSchema } from '../src/schema.js';
 
 test('executor preserves partial delivery as non-retryable sent state and returns a warning result', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'agent-gate-executor-partial-'));
+  const root = await mkdtemp(join(tmpdir(), 'nightdrop-executor-partial-'));
   try {
     for (const directory of ['approved', 'sent', 'failed']) {
       await mkdir(join(root, directory));
@@ -56,7 +56,7 @@ test('executor preserves partial delivery as non-retryable sent state and return
       providers: { smtp: { type: 'log-only' } },
       defaults: { provider: 'smtp', timezone: 'UTC' },
       audit: { enabled: true, logFile: auditPath }
-    } as AgentGateConfig;
+    } as NightdropConfig;
 
     const executor = new Executor(config, root, { smtp: provider });
     const result = await executor.executeApprovedDraft(approvedPath);
@@ -155,7 +155,7 @@ test('Telegram notification failure after acceptance never becomes a send-failed
 });
 
 test('post-acceptance persistence failure never reports delivery as failed', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'agent-gate-executor-persistence-warning-'));
+  const root = await mkdtemp(join(tmpdir(), 'nightdrop-executor-persistence-warning-'));
   try {
     for (const directory of ['approved', 'sent', 'failed']) {
       await mkdir(join(root, directory));
@@ -184,7 +184,7 @@ test('post-acceptance persistence failure never reports delivery as failed', asy
       providers: { smtp: { type: 'log-only' } },
       defaults: { provider: 'smtp', timezone: 'UTC' },
       audit: { enabled: true, logFile: join(root, 'missing-directory', 'audit.log') }
-    } as AgentGateConfig;
+    } as NightdropConfig;
     const provider: Provider = {
       describeSender: () => 'sender@example.com',
       send: async (): Promise<ProviderResult> => ({ details: 'accepted' })

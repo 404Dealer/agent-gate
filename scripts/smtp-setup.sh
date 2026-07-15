@@ -7,8 +7,8 @@ set -euo pipefail
 readonly TRUSTED_PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 export PATH="$TRUSTED_PATH"
 
-SERVICE_USER="agentgate"
-SERVICE_NAME="agent-gate.service"
+SERVICE_USER="nightdrop"
+SERVICE_NAME="nightdrop.service"
 SCRIPT_PATH="$(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}")"
 INSTALL_DIR="$(cd "$(/usr/bin/dirname -- "$SCRIPT_PATH")/.." && pwd -P)"
 CONFIG_PATH="$INSTALL_DIR/config/config.yaml"
@@ -115,12 +115,12 @@ if ! SLEEP_BIN="$(resolve_trusted_executable sleep)"; then
   exit 1
 fi
 if [[ ! -f "$INSTALL_DIR/dist/smtp-setup.js" || -L "$INSTALL_DIR/dist/smtp-setup.js" ]]; then
-  echo "SMTP setup executable is missing or unsafe. Reinstall agent-gate first." >&2
+  echo "SMTP setup executable is missing or unsafe. Reinstall Nightdrop first." >&2
   exit 1
 fi
 assert_trusted_ancestor_chain "$INSTALL_DIR/dist/smtp-setup.js"
 if [[ ! -f "$CONFIG_PATH" || -L "$CONFIG_PATH" ]]; then
-  echo "Agent-gate config is missing or unsafe: $CONFIG_PATH" >&2
+  echo "Nightdrop config is missing or unsafe: $CONFIG_PATH" >&2
   exit 1
 fi
 
@@ -132,7 +132,7 @@ fi
   TERM="dumb" \
   GNUPGHOME="/home/$SERVICE_USER/.gnupg" \
   PASSWORD_STORE_DIR="/home/$SERVICE_USER/.password-store" \
-  AGENT_GATE_PASS_BIN="$PASS_BIN" \
+  NIGHTDROP_PASS_BIN="$PASS_BIN" \
   "$NODE_BIN" "$INSTALL_DIR/dist/smtp-setup.js" "$@" --config "$CONFIG_PATH"
 
 "$SYSTEMCTL_BIN" restart "$SERVICE_NAME"

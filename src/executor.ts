@@ -1,6 +1,6 @@
 import { appendFile, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
-import type { AgentGateConfig } from './config.js';
+import type { NightdropConfig } from './config.js';
 import {
   GmailMailboxTrashService,
   type MailboxTrashResult,
@@ -68,7 +68,7 @@ export class Executor {
   private readonly mailboxUnsubscribe: ReadonlyMap<string, MailboxUnsubscribeExecutor>;
 
   constructor(
-    private readonly config: AgentGateConfig,
+    private readonly config: NightdropConfig,
     private readonly draftsRoot: string,
     providerOverrides?: Record<string, Provider>,
     mailboxTrashOverride?: MailboxTrashExecutor | null,

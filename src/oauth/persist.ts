@@ -9,7 +9,7 @@ export interface SecretStore {
 }
 
 const transactionId = (): string => randomBytes(12).toString('hex');
-const versionedKey = (base: string, id: string): string => `agent-gate/${base}-${id}`;
+const versionedKey = (base: string, id: string): string => `nightdrop/${base}-${id}`;
 const passReference = (key: string): string => `\${PASS:${key}}`;
 
 const withOnboardingLock = async <T>(configPath: string, operation: () => Promise<T>): Promise<T> => {

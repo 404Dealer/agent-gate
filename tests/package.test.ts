@@ -16,7 +16,7 @@ const run = (command: string, args: string[], cwd: string) => spawnSync(command,
 });
 
 test('published npm executables run from an installed tarball', { timeout: 180_000 }, async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-package-test-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-package-test-'));
   try {
     const pack = run('npm', ['pack', '--pack-destination', dir], repoRoot);
     assert.equal(pack.status, 0, pack.stderr || pack.stdout);
@@ -33,10 +33,11 @@ test('published npm executables run from an installed tarball', { timeout: 180_0
     assert.equal(install.status, 0, install.stderr || install.stdout);
 
     for (const binary of [
-      'agent-gate',
-      'agent-gate-oauth',
-      'agent-gate-smtp-setup',
-      'agent-gate-mailbox-cleanup'
+      'nightdrop',
+      'nightdrop-oauth',
+      'nightdrop-smtp-setup',
+      'nightdrop-mailbox-cleanup',
+      'nightdrop-mailbox'
     ]) {
       const result = run(join(installDir, 'node_modules', '.bin', binary), ['--help'], installDir);
       assert.equal(result.status, 0, `${binary}: ${result.error?.message ?? result.stderr ?? result.stdout}`);

@@ -1,5 +1,5 @@
 telegram:
-  botToken: "${AGENT_GATE_BOT_TOKEN}"
+  botToken: "${NIGHTDROP_BOT_TOKEN}"
   allowedUsers: [123456789]  # Your Telegram user ID(s)
 
 watch:
@@ -18,36 +18,37 @@ security:
 
 providers:
   # Simplest self-hosted Gmail path: create a dedicated Google App Password,
-  # store it under agentgate, and use authenticated SMTP over implicit TLS.
+  # store it under the nightdrop pass namespace, and use authenticated SMTP over implicit TLS.
   gmail-smtp:
     type: "email-smtp"
     host: "smtp.gmail.com"
     port: 465
     tlsMode: "implicit"
     username: "you@gmail.com"
-    password: "${GMAIL_APP_PASSWORD}"
+    password: "${NIGHTDROP_GMAIL_APP_PASSWORD}"
     fromAddress: "you@gmail.com"
     displayName: "Your Name"
 
   # Narrower gmail.send OAuth alternative; setup is more involved.
   gmail:
     type: "email-gmail"
-    clientId: "${GOOGLE_CLIENT_ID}"
+    clientId: "${NIGHTDROP_GOOGLE_CLIENT_ID}"
     # Desktop/public-client onboarding does not use a clientSecret.
-    refreshToken: "${GOOGLE_REFRESH_TOKEN}"
+    refreshToken: "${NIGHTDROP_GOOGLE_REFRESH_TOKEN}"
     fromAddress: "you@gmail.com"
     displayName: "Your Name"
 
   outlook:
     type: "email-outlook"
-    clientId: "${MICROSOFT_CLIENT_ID}"
+    clientId: "${NIGHTDROP_MICROSOFT_CLIENT_ID}"
     # Omit clientSecret for recommended public-client PKCE/device flows.
-    # clientSecret: "${MICROSOFT_CLIENT_SECRET}"
-    refreshToken: "${MICROSOFT_REFRESH_TOKEN}"
+    # clientSecret: "${NIGHTDROP_MICROSOFT_CLIENT_SECRET}"
+    refreshToken: "${NIGHTDROP_MICROSOFT_REFRESH_TOKEN}"
     # Recommended for durable Microsoft token rotation. This key is accepted only
-    # when refreshToken is the exact matching ${PASS:agent-gate/microsoft-refresh-token} reference.
+    # when refreshToken is the exact matching
+    # ${PASS:nightdrop/microsoft-refresh-token-<transaction>} reference.
     # Legacy env-based configs may omit it and rotate only in memory until restart.
-    # refreshTokenKey: "agent-gate/microsoft-refresh-token"
+    # refreshTokenKey: "nightdrop/microsoft-refresh-token-<transaction>"
     tenantId: "common"
     fromAddress: "you@outlook.com"
     displayName: "Your Name"
@@ -57,11 +58,11 @@ providers:
 
   zoho:
     type: "email-zoho"
-    clientId: "${ZOHO_CLIENT_ID}"
-    clientSecret: "${ZOHO_CLIENT_SECRET}"
-    refreshToken: "${ZOHO_REFRESH_TOKEN}"
+    clientId: "${NIGHTDROP_ZOHO_CLIENT_ID}"
+    clientSecret: "${NIGHTDROP_ZOHO_CLIENT_SECRET}"
+    refreshToken: "${NIGHTDROP_ZOHO_REFRESH_TOKEN}"
     region: "us" # us|eu|in|au|jp|ca|sa
-    accountId: "${ZOHO_ACCOUNT_ID}"
+    accountId: "${NIGHTDROP_ZOHO_ACCOUNT_ID}"
     fromAddress: "you@yourdomain.com"
 
   log:

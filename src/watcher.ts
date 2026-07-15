@@ -50,7 +50,7 @@ export class DraftWatcher extends EventEmitter {
       if (extname(filePath) !== '.json') return;
       if (basename(filePath).startsWith('.')) return;
       // eslint-disable-next-line no-console
-      console.log(`[agent-gate] new draft detected: ${basename(filePath)}`);
+      console.log(`[nightdrop] new draft detected: ${basename(filePath)}`);
       await this.handleNewFile(filePath);
     });
 

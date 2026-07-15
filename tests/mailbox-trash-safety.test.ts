@@ -76,7 +76,7 @@ test('references must be canonical and semantically unique', () => {
 });
 
 test('pending proposals are replayed after restart before the inbox watcher is exposed', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'agent-gate-pending-replay-'));
+  const root = await mkdtemp(join(tmpdir(), 'nightdrop-pending-replay-'));
   try {
     const inboxDir = join(root, 'inbox');
     const pendingDir = join(root, 'pending');

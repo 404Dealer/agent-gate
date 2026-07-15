@@ -9,19 +9,19 @@ const readPrivateConfigSource = async (configPath: string): Promise<string> => {
   try {
     handle = await open(configPath, constants.O_RDONLY | constants.O_NOFOLLOW);
   } catch {
-    throw new Error('Agent-gate config must be an existing regular file, not a symlink');
+    throw new Error('Nightdrop config must be an existing regular file, not a symlink');
   }
 
   try {
     const stat = await handle.stat();
     if (!stat.isFile()) {
-      throw new Error('Agent-gate config must be a regular file, not a symlink');
+      throw new Error('Nightdrop config must be a regular file, not a symlink');
     }
     if ((stat.mode & 0o777) !== 0o600) {
-      throw new Error('Agent-gate config must have mode 0600 before OAuth setup');
+      throw new Error('Nightdrop config must have mode 0600 before OAuth setup');
     }
     if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
-      throw new Error('Agent-gate config must be owned by the OAuth setup user');
+      throw new Error('Nightdrop config must be owned by the OAuth setup user');
     }
     return await handle.readFile('utf8');
   } finally {
@@ -32,7 +32,7 @@ const readPrivateConfigSource = async (configPath: string): Promise<string> => {
 const loadPrivateConfigDocument = async (configPath: string) => {
   const document = YAML.parseDocument(await readPrivateConfigSource(configPath));
   if (document.errors.length > 0) {
-    throw new Error('Agent-gate config contains invalid YAML');
+    throw new Error('Nightdrop config contains invalid YAML');
   }
   return document;
 };

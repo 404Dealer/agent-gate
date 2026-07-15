@@ -122,5 +122,5 @@ test('production isolation verifier accepts a write-only inbox and private state
 });
 
 async function mktempDir(): Promise<string> {
-  return await import('node:fs/promises').then(({ mkdtemp }) => mkdtemp(join(tmpdir(), 'agent-gate-test-')));
+  return await import('node:fs/promises').then(({ mkdtemp }) => mkdtemp(join(tmpdir(), 'nightdrop-test-')));
 }

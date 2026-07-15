@@ -6,14 +6,14 @@ It does **not** delete, move, archive, empty, fetch, display, or summarize messa
 
 ## Prerequisites
 
-- agent-gate is installed with `scripts/install-production.sh`.
+- Nightdrop is installed with `scripts/install-production.sh`.
 - Gmail SMTP onboarding has completed successfully:
 
   ```bash
-  sudo /opt/agent-gate/scripts/smtp-setup.sh gmail
+  sudo /opt/nightdrop/scripts/smtp-setup.sh gmail
   ```
 
-- `/opt/agent-gate/config/config.yaml` contains the verified `gmail-smtp` provider and a versioned `${PASS:agent-gate/...}` password reference.
+- `/opt/nightdrop/config/config.yaml` contains the verified `gmail-smtp` provider and a versioned `${PASS:nightdrop/...}` password reference.
 - Run from a human-controlled local or SSH terminal. Non-interactive execution is rejected.
 
 The send-only Gmail OAuth provider is not eligible. The helper intentionally reuses the isolated Gmail App Password because Gmail OAuth onboarding requests only `gmail.send`, which cannot read or modify mailbox flags.
@@ -21,15 +21,15 @@ The send-only Gmail OAuth provider is not eligible. The helper intentionally reu
 ## Run
 
 ```bash
-sudo /opt/agent-gate/scripts/mailbox-cleanup.sh gmail
+sudo /opt/nightdrop/scripts/mailbox-cleanup.sh gmail
 ```
 
 The helper will:
 
 1. validate the root-owned installed wrapper and pinned system executables;
-2. drop privileges to the isolated `agentgate` user with a clean environment;
+2. drop privileges to the isolated `nightdrop` user with a clean environment;
 3. read only the `gmail-smtp` provider and its App Password reference;
-4. obtain the App Password internally from the `agentgate` password store;
+4. obtain the App Password internally from the `nightdrop` password store;
 5. connect only to `imap.gmail.com:993` with certificate-verified TLS;
 6. locate exactly one server-declared `\Junk` and one `\Trash` mailbox;
 7. snapshot unread message UIDs and each mailbox's UIDVALIDITY;
@@ -60,14 +60,14 @@ Any input other than the exact phrase `MARK READ` cancels without writing messag
 | `cancelled` | Exact confirmation was not entered | None |
 | `applied` | Both approved UID snapshots were submitted successfully | None |
 | `partial` | One folder failed or could not verify its complete update after confirmation | Rerun the same command; adding `\Seen` is idempotent |
-| Audit warning | Mailbox result completed, but the counts-only audit event could not be appended | Do not assume the mailbox action failed; repair `/opt/agent-gate/audit.log` permissions and inspect Gmail before rerunning |
+| Audit warning | Mailbox result completed, but the counts-only audit event could not be appended | Do not assume the mailbox action failed; repair `/opt/nightdrop/audit.log` permissions and inspect Gmail before rerunning |
 | Fixed failure | Validation, credential lookup, TLS, authentication, discovery, or preview failed before a result | Correct the installation/account issue and rerun |
 
 Provider/server diagnostics are not reflected to the terminal or audit log.
 
 ## Audit record
 
-Each result attempts to append one JSONL event to `/opt/agent-gate/audit.log` with:
+Each result attempts to append one JSONL event to `/opt/nightdrop/audit.log` with:
 
 - timestamp;
 - action (`mailbox-cleanup`);
@@ -79,7 +79,7 @@ Each result attempts to append one JSONL event to `/opt/agent-gate/audit.log` wi
 - marked-read count;
 - incomplete folder labels, if any.
 
-No App Password, password-store key, message UID, sender, recipient, subject, body, header, or server diagnostic is recorded. The audit file is opened with no-symlink semantics and must remain owned by `agentgate` without group/other write permission.
+No App Password, password-store key, message UID, sender, recipient, subject, body, header, or server diagnostic is recorded. The audit file is opened with no-symlink semantics and must remain owned by `nightdrop` without group/other write permission.
 
 ## Security boundary
 
@@ -89,7 +89,7 @@ No App Password, password-store key, message UID, sender, recipient, subject, bo
 - IMAP client logging and raw protocol logging are disabled.
 - TLS endpoint, port, SNI, certificate verification, timeouts, and response-size bounds are fixed in code.
 - Preview locks are read-only. Write locks verify UIDVALIDITY immediately before UID-based `STORE +FLAGS (\Seen)`.
-- The helper never restarts or modifies the agent-gate service.
+- The helper never restarts or modifies the Nightdrop service.
 
 The human-controlled `sudo` invocation and exact confirmation phrase are the deterministic approval gate for this narrowly scoped mailbox mutation.
 
@@ -112,7 +112,7 @@ Rerun the command. Already-seen messages no longer match the unread search, and 
 Verify without printing the audit contents:
 
 ```bash
-sudo stat -c '%U:%G %a %n' /opt/agent-gate/audit.log
+sudo stat -c '%U:%G %a %n' /opt/nightdrop/audit.log
 ```
 
-Expected owner is `agentgate:agentgate`, with mode `640` (plus any installer-managed read-only ACL).
+Expected owner is `nightdrop:nightdrop`, with mode `640` (plus any installer-managed read-only ACL).

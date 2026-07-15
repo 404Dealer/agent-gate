@@ -1,12 +1,12 @@
 # Credential Handoff Without Exposing Send Secrets to Hermes
 
-This guide describes the recommended operator flow when Hermes Agent installs and uses agent-gate, but must **not** receive Gmail, Zoho, Outlook, SMTP, or approval-bot send credentials.
+This guide describes the recommended operator flow when Hermes Agent installs and uses Nightdrop, but must **not** receive Gmail, Zoho, Outlook, SMTP, or approval-bot send credentials.
 
 ## Goal
 
 Hermes should be able to:
 
-- install agent-gate scaffolding;
+- install Nightdrop scaffolding;
 - configure non-secret settings;
 - write outbound drafts to the write-only inbox;
 - check service health and logs if allowed.
@@ -14,7 +14,7 @@ Hermes should be able to:
 Hermes should **not** be able to:
 
 - read provider send credentials;
-- read the agent-gate approval bot token;
+- read the Nightdrop approval bot token;
 - approve its own drafts;
 - read pending/approved/sent draft payloads;
 - send email directly.
@@ -25,9 +25,9 @@ The human operator is responsible for the few actions that intentionally cross t
 
 | Responsibility | Why Hermes should not own it |
 |----------------|------------------------------|
-| Create the separate agent-gate Telegram bot | The bot token controls approvals; Hermes must not be able to approve its own drafts |
+| Create the separate Nightdrop Telegram bot | The bot token controls approvals; Hermes must not be able to approve its own drafts |
 | Authorize provider send scopes | Gmail/Zoho/Outlook send scopes are the actual send capability |
-| Store provider secrets under the `agentgate` user | Keeps send credentials outside the Hermes OS user and logs |
+| Store provider secrets under the `nightdrop` user | Keeps send credentials outside the Hermes OS user and logs |
 | Verify the configured sender address | Approval previews are only meaningful if the real configured sender is correct |
 | Approve or deny every outbound payload | Human approval is the control point |
 | Keep recovery access outside Hermes | If Hermes breaks or is compromised, the operator still controls the gate |
@@ -53,33 +53,33 @@ This creates users, groups, directories, permissions, a systemd service, and a c
 Store the separate approval-bot token first, because provider onboarding restarts the service after a successful config commit:
 
 ```bash
-sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
+sudo /opt/nightdrop/scripts/configure-provider-secrets.sh telegram
 ```
 
 For the simplest Gmail setup, create a dedicated Google App Password and enter it only into the human-controlled SMTP helper:
 
 ```bash
-sudo /opt/agent-gate/scripts/smtp-setup.sh gmail
+sudo /opt/nightdrop/scripts/smtp-setup.sh gmail
 ```
 
-The helper verifies Gmail SMTP over TLS, stores the App Password directly under `agentgate`, writes only a versioned `${PASS:...}` reference plus safe sender metadata to private config, and restarts the service. The App Password is broader than the Gmail API `gmail.send` scope; see [smtp-onboarding.md](smtp-onboarding.md).
+The helper verifies Gmail SMTP over TLS, stores the App Password directly under `nightdrop`, writes only a versioned `${PASS:...}` reference plus safe sender metadata to private config, and restarts the service. The App Password is broader than the Gmail API `gmail.send` scope; see [smtp-onboarding.md](smtp-onboarding.md).
 
 Alternatively, authorize an OAuth provider from a local terminal, SSH session, or console that is **not being driven by Hermes**:
 
 ```bash
-sudo /opt/agent-gate/scripts/oauth-setup.sh gmail
+sudo /opt/nightdrop/scripts/oauth-setup.sh gmail
 # or
-sudo /opt/agent-gate/scripts/oauth-setup.sh outlook
+sudo /opt/nightdrop/scripts/oauth-setup.sh outlook
 # or
-sudo /opt/agent-gate/scripts/oauth-setup.sh zoho
+sudo /opt/nightdrop/scripts/oauth-setup.sh zoho
 ```
 
-The OAuth helper runs as `agentgate`, stores the resulting refresh token directly in that user's encrypted `pass` store, writes only versioned `${PASS:...}` references into the private config, and restarts the service. See [oauth-onboarding.md](oauth-onboarding.md).
+The OAuth helper runs as `nightdrop`, stores the resulting refresh token directly in that user's encrypted `pass` store, writes only versioned `${PASS:...}` references into the private config, and restarts the service. See [oauth-onboarding.md](oauth-onboarding.md).
 
 For manual email recovery when an onboarding helper cannot be used, the operator can run the installed fallback helper, for example:
 
 ```bash
-sudo /opt/agent-gate/scripts/configure-provider-secrets.sh gmail
+sudo /opt/nightdrop/scripts/configure-provider-secrets.sh gmail
 ```
 
 Do **not** paste these values into a Hermes chat, Telegram DM with Hermes, issue comment, PR comment, or terminal command that Hermes is executing.
@@ -89,13 +89,13 @@ Do **not** paste these values into a Hermes chat, Telegram DM with Hermes, issue
 The preferred model is:
 
 ```text
-Hermes installs infrastructure -> human helper gives secrets directly to agentgate
+Hermes installs infrastructure -> human helper gives secrets directly to Nightdrop
 ```
 
 Hermes may install packages, create users/groups, write non-secret config, and verify service health. Provider send credentials should enter through one of:
 
-1. the human-run Gmail SMTP helper `scripts/smtp-setup.sh`, which verifies a dedicated App Password and stores it directly under `agentgate`;
-2. the shipped PKCE browser flow in `scripts/oauth-setup.sh`, which terminates as `agentgate` and writes directly to its encrypted store (with Outlook device code available only as an explicit fallback); or
+1. the human-run Gmail SMTP helper `scripts/smtp-setup.sh`, which verifies a dedicated App Password and stores it directly under `nightdrop`;
+2. the shipped PKCE browser flow in `scripts/oauth-setup.sh`, which terminates as `nightdrop` and writes directly to its encrypted store (with Outlook device code available only as an explicit fallback); or
 3. the human-run manual fallback `scripts/configure-provider-secrets.sh`.
 
 Do **not** treat this as equivalent:
@@ -122,7 +122,7 @@ Using the same Telegram bot for credential entry is possible, but it expands the
 - The approval bot becomes both an approval UI and a secret-management control plane.
 - The implementation must handle deletion, redaction, retries, partial input, and lockout rules.
 
-For v1, prefer local/SSH credential handoff or OAuth device/browser flow that terminates inside the `agentgate` service account.
+For v1, prefer local/SSH credential handoff or OAuth device/browser flow that terminates inside the `nightdrop` service account.
 
 ## Provider Token Patterns
 
@@ -136,10 +136,10 @@ Supported provider types:
 The SMTP helper stores one versioned key matching:
 
 ```text
-agent-gate/smtp-password-<transaction>
+nightdrop/smtp-password-<transaction>
 ```
 
-The App Password belongs only to `agentgate`. It must never be copied to Hermes and should be revoked from Google Account when no longer needed. See [smtp-onboarding.md](smtp-onboarding.md).
+The App Password belongs only to `nightdrop`. It must never be copied to Hermes and should be revoked from Google Account when no longer needed. See [smtp-onboarding.md](smtp-onboarding.md).
 
 Required Gmail OAuth data scope plus basic sender identity scopes:
 
@@ -149,27 +149,27 @@ email
 https://www.googleapis.com/auth/gmail.send
 ```
 
-Recommended storage keys for the Desktop/public-client flow:
+The Desktop/public-client flow writes versioned keys. `<transaction>` is the same random 24-character lowercase hexadecimal suffix for every key written by one onboarding transaction:
 
 ```text
-agent-gate/google-client-id
-agent-gate/google-refresh-token
+nightdrop/google-client-id-<transaction>
+nightdrop/google-refresh-token-<transaction>
 ```
 
 No Google client secret is used by secure Desktop onboarding.
 
-Hermes may have separate read-only Gmail access if desired, but it should not have the `gmail.send` refresh token if agent-gate is the send boundary.
+Hermes may have separate read-only Gmail access if desired, but it should not have the `gmail.send` refresh token if Nightdrop is the send boundary.
 
 ### Zoho
 
 Supported provider type: `email-zoho`.
 
-Recommended storage keys:
+Versioned storage keys written by the same onboarding transaction:
 
 ```text
-agent-gate/zoho-client-id
-agent-gate/zoho-client-secret
-agent-gate/zoho-refresh-token
+nightdrop/zoho-client-id-<transaction>
+nightdrop/zoho-client-secret-<transaction>
+nightdrop/zoho-refresh-token-<transaction>
 ```
 
 The discovered Zoho `accountId`, selected region, and sender address are safe metadata in private config, not password-store secrets.
@@ -188,16 +188,16 @@ Mail.Send
 User.Read  # used during onboarding to discover the authenticated mailbox
 ```
 
-Recommended storage keys for the public-client PKCE flow (and device-code fallback):
+Versioned storage keys for the public-client PKCE flow (and device-code fallback):
 
 ```text
-agent-gate/microsoft-client-id
-agent-gate/microsoft-refresh-token
+nightdrop/microsoft-client-id-<transaction>
+nightdrop/microsoft-refresh-token-<transaction>
 ```
 
-No Microsoft client secret is used. Secure onboarding sets `refreshTokenKey: agent-gate/microsoft-refresh-token` so replacement refresh tokens are persisted back to the encrypted store.
+No Microsoft client secret is used. Secure onboarding sets `refreshTokenKey: nightdrop/microsoft-refresh-token-<transaction>` so replacement refresh tokens are persisted back to the exact versioned key in the encrypted store.
 
-For Outlook, the same rule applies: the refresh token that can send mail belongs only to `agentgate`, not Hermes. The provider exchanges that refresh token for a short-lived Graph access token and calls `sendMail` only after human approval.
+For Outlook, the same rule applies: the refresh token that can send mail belongs only to `nightdrop`, not Hermes. The provider exchanges that refresh token for a short-lived Graph access token and calls `sendMail` only after human approval.
 
 ## How Hermes Can Install Nearly Everything Without Seeing Secrets
 
@@ -208,22 +208,22 @@ The safest workflow is:
 3. Hermes writes non-secret config values and docs.
 4. Hermes stops before any provider credential entry.
 5. The operator runs `scripts/smtp-setup.sh` or `scripts/oauth-setup.sh` from their own terminal/SSH session.
-6. The App Password or OAuth tokens travel directly to an `agentgate` process and its encrypted store.
-7. The wrapper restarts `agent-gate` after successful persistence.
+6. The App Password or OAuth tokens travel directly to a `nightdrop` process and its encrypted store.
+7. The wrapper restarts `nightdrop.service` after successful persistence.
 8. Hermes verifies only service health and writes a harmless test draft to the inbox.
 
 Hermes can verify that secrets are **referenced**, without seeing their values:
 
 ```bash
-sudo -u agentgate pass ls agent-gate
-sudo systemctl status agent-gate --no-pager
+sudo -u nightdrop pass ls nightdrop
+sudo systemctl status nightdrop --no-pager
 ```
 
 Hermes should not run commands like:
 
 ```bash
-GOOGLE_REFRESH_TOKEN=... hermes ...
-echo "secret" | sudo -u agentgate pass insert ...
+NIGHTDROP_GOOGLE_REFRESH_TOKEN=... hermes ...
+echo "secret" | sudo -u nightdrop pass insert ...
 ```
 
 Those expose secrets to shell history, process inspection, logs, or the Hermes transcript.
@@ -233,11 +233,11 @@ Those expose secrets to shell history, process inspection, logs, or the Hermes t
 After setup, these should be true:
 
 ```text
-Hermes user can write to /opt/agent-gate/drafts/inbox
-Hermes user cannot list/read /opt/agent-gate/drafts/inbox
-Hermes user cannot read /opt/agent-gate/config/config.yaml
-Hermes user cannot read /home/agentgate/.password-store
-Hermes user cannot read the agent-gate Telegram bot token
+Hermes user can write to /opt/nightdrop/drafts/inbox
+Hermes user cannot list/read /opt/nightdrop/drafts/inbox
+Hermes user cannot read /opt/nightdrop/config/config.yaml
+Hermes user cannot read /home/nightdrop/.password-store
+Hermes user cannot read the Nightdrop Telegram bot token
 Hermes has no Gmail/Zoho/Outlook send credentials
-agent-gate starts with security.enforceProductionPermissions: true
+Nightdrop starts with security.enforceProductionPermissions: true
 ```

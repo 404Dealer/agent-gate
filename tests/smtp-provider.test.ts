@@ -35,7 +35,7 @@ const sampleDraft = (): Draft => ({
 });
 
 test('config loads an authenticated TLS SMTP provider and the factory creates it', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-smtp-config-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-smtp-config-'));
   try {
     const configPath = join(dir, 'config.yaml');
     await writeFile(configPath, `
@@ -158,7 +158,7 @@ test('smtp provider drops a server-controlled message ID containing control char
 });
 
 test('config rejects an SMTP host containing URL or whitespace syntax', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-smtp-invalid-host-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-smtp-invalid-host-'));
   try {
     const configPath = join(dir, 'config.yaml');
     await writeFile(configPath, `
@@ -191,7 +191,7 @@ audit:
 });
 
 test('config requires explicit operator opt-in when SMTP sender differs from authenticated username', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-smtp-alias-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-smtp-alias-'));
   try {
     const configPath = join(dir, 'config.yaml');
     const render = (allowAlias: boolean): string => `

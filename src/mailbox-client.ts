@@ -4,7 +4,7 @@ import { realpathSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { pathToFileURL } from 'node:url';
 
-const SOCKET_PATH = '/run/agent-gate-mailbox/broker.sock';
+const SOCKET_PATH = '/run/nightdrop-mailbox/broker.sock';
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 
 type ClientRequest =
@@ -25,14 +25,14 @@ interface ClientResponse {
 
 const usage = (): string => [
   'Usage:',
-  '  agent-gate-mailbox profiles',
-  '  agent-gate-mailbox list [--profile PROFILE] [--unread] [--limit 1-50]',
-  '  agent-gate-mailbox read MESSAGE_REF',
-  '  agent-gate-mailbox mark-read MESSAGE_REF [MESSAGE_REF ...]',
-  '  agent-gate-mailbox propose-trash MESSAGE_REF [MESSAGE_REF ...] [--context TEXT]',
-  '  agent-gate-mailbox propose-unsubscribe MESSAGE_REF [--context TEXT]',
+  '  nightdrop-mailbox profiles',
+  '  nightdrop-mailbox list [--profile PROFILE] [--unread] [--limit 1-50]',
+  '  nightdrop-mailbox read MESSAGE_REF',
+  '  nightdrop-mailbox mark-read MESSAGE_REF [MESSAGE_REF ...]',
+  '  nightdrop-mailbox propose-trash MESSAGE_REF [MESSAGE_REF ...] [--context TEXT]',
+  '  nightdrop-mailbox propose-unsubscribe MESSAGE_REF [--context TEXT]',
   '',
-  'Outputs JSON. Email credentials remain inside the isolated agent-gate service.'
+  'Outputs JSON. Email credentials remain inside the isolated Nightdrop service.'
 ].join('\n');
 
 const refIdentity = (value: string): {

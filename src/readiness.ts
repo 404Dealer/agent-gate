@@ -1,12 +1,12 @@
 import { rm, writeFile } from 'node:fs/promises';
 
-export const SERVICE_READY_FILE = '/run/agent-gate/ready';
+export const SERVICE_READY_FILE = '/run/nightdrop/ready';
 
 export function configuredReadyFile(environment: NodeJS.ProcessEnv = process.env): string | undefined {
-  const path = environment.AGENT_GATE_READY_FILE;
+  const path = environment.NIGHTDROP_READY_FILE;
   if (path === undefined) return undefined;
   if (path !== SERVICE_READY_FILE) {
-    throw new Error('AGENT_GATE_READY_FILE is not the fixed production readiness path');
+    throw new Error('NIGHTDROP_READY_FILE is not the fixed production readiness path');
   }
   return path;
 }

@@ -1,4 +1,4 @@
-import type { AgentGateConfig, ProviderConfig } from '../config.js';
+import type { NightdropConfig, ProviderConfig } from '../config.js';
 import type { BrokerCredentials } from './gmail-inbox.js';
 
 export const MAILBOX_PROFILE_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
@@ -62,7 +62,7 @@ const toProfile = (
   throw new Error(`Mailbox profile provider is not supported: ${providerName}`);
 };
 
-export function mailboxProfilesFromConfig(config: AgentGateConfig): Map<string, MailboxProfile> {
+export function mailboxProfilesFromConfig(config: NightdropConfig): Map<string, MailboxProfile> {
   const configured = config.mailboxProfiles ?? {};
   const entries = Object.entries(configured);
   const selected = entries.map(([name, value]) => [name, value.provider] as const);

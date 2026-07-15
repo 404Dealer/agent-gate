@@ -19,14 +19,14 @@ const GmailAddressSchema = z.string().email().refine(
   'Gmail address contains unsafe characters'
 );
 
-const usage = (): string => `Usage: agent-gate-smtp-setup gmail [--profile NAME] [--config PATH]
+const usage = (): string => `Usage: nightdrop-smtp-setup gmail [--profile NAME] [--config PATH]
 
 Interactive Gmail App Password onboarding over authenticated SMTP/TLS.
 Run this only through scripts/smtp-setup.sh from a human-controlled SSH/local terminal.
 Secrets are never accepted as command-line arguments.`;
 
 export function resolveSmtpPassExecutable(env: NodeJS.ProcessEnv): string {
-  const executable = env.AGENT_GATE_PASS_BIN;
+  const executable = env.NIGHTDROP_PASS_BIN;
   if (!executable || !isAbsolute(executable)) {
     throw new Error('SMTP setup requires a trusted absolute pass executable from the production wrapper');
   }
@@ -39,18 +39,18 @@ async function assertSecureRuntime(configPath: string): Promise<void> {
   }
   const uid = process.getuid?.();
   if (uid === undefined || uid === 0) {
-    throw new Error('SMTP setup must run as the isolated agentgate user, never as root');
+    throw new Error('SMTP setup must run as the isolated nightdrop user, never as root');
   }
 
   const stat = await lstat(configPath);
   if (!stat.isFile() || stat.isSymbolicLink()) {
-    throw new Error('Agent-gate config must be a regular file, not a symlink');
+    throw new Error('Nightdrop config must be a regular file, not a symlink');
   }
   if (stat.uid !== uid) {
-    throw new Error('Agent-gate config must be owned by the SMTP setup user');
+    throw new Error('Nightdrop config must be owned by the SMTP setup user');
   }
   if ((stat.mode & 0o777) !== 0o600) {
-    throw new Error('Agent-gate config must have mode 0600 before SMTP setup');
+    throw new Error('Nightdrop config must have mode 0600 before SMTP setup');
   }
 }
 

@@ -10,7 +10,7 @@ export function parseSmtpSetupArgs(args: string[]): SmtpSetupOptions {
     throw new Error('Provider must be gmail');
   }
 
-  let configPath = '/opt/agent-gate/config/config.yaml';
+  let configPath = '/opt/nightdrop/config/config.yaml';
   let profile: string | undefined;
   for (let index = 0; index < rest.length; index += 1) {
     const option = rest[index];
