@@ -249,7 +249,7 @@ test('production installer rejects unmanaged service identity and capability-gro
   ]) {
     assert.notEqual(validate('validate_root_owned_directory_record', record), 0);
   }
-  assert.equal(validate('validate_root_owned_directory_chain', ['/opt/nightdrop-review-missing/path']), 0);
+  assert.equal(validate('validate_root_owned_directory_chain', ['/usr/nightdrop-review-missing/path']), 0);
   assert.notEqual(validate('validate_root_owned_directory_chain', ['/tmp/nightdrop-review-missing/path']), 0);
 
   const validateAuditAcl = (
