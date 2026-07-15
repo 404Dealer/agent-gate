@@ -22,7 +22,7 @@ test('production SMTP wrapper enforces TTY, trusted install paths, privilege dro
   assert.match(wrapper, /validate_trusted_path/);
   assert.match(wrapper, /resolve_trusted_executable runuser/);
   assert.match(wrapper, /resolve_trusted_executable pass/);
-  assert.match(wrapper, /AGENT_GATE_PASS_BIN="\$PASS_BIN"/);
+  assert.match(wrapper, /NIGHTDROP_PASS_BIN="\$PASS_BIN"/);
   assert(wrapper.indexOf('validate_trusted_path') < wrapper.indexOf('"$RUNUSER_BIN" -u'));
   assert.match(wrapper, /resolve_trusted_executable env/);
   assert.match(wrapper, /resolve_trusted_executable systemctl/);
@@ -40,7 +40,7 @@ test('production SMTP wrapper enforces TTY, trusted install paths, privilege dro
   assert.match(installer, /"\$INSTALL_DIR\/scripts\/smtp-setup\.sh"/);
   assert.match(installer, /--exclude \/\.hermes\//);
   assert.match(installer, /resolve_trusted_executable pass/);
-  assert.match(installer, /Environment=AGENT_GATE_PASS_BIN=\$PASS_BIN/);
+  assert.match(installer, /Environment=NIGHTDROP_PASS_BIN=\$PASS_BIN/);
 
   const configSource = await readFile(new URL('../src/config.ts', import.meta.url), 'utf8');
   assert.match(configSource, /execFileSync\(passExecutable, \['show', key\]/);
@@ -51,7 +51,7 @@ test('trusted PATH validation rejects an attacker-writable executable directory 
   const wrapper = await readFile(new URL('../scripts/smtp-setup.sh', import.meta.url), 'utf8');
   const functionSource = wrapper.match(/validate_trusted_path\(\) \{[\s\S]*?\n\}/)?.[0];
   assert(functionSource, 'validate_trusted_path function not found');
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-untrusted-path-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-untrusted-path-'));
   try {
     await chmod(dir, 0o777);
     const result = spawnSync('/bin/bash', ['-c', [
@@ -68,10 +68,10 @@ test('trusted PATH validation rejects an attacker-writable executable directory 
 });
 
 test('SMTP setup requires an absolute pass executable selected by the trusted wrapper', async () => {
-  assert.equal(resolveSmtpPassExecutable({ AGENT_GATE_PASS_BIN: '/usr/bin/pass' }), '/usr/bin/pass');
+  assert.equal(resolveSmtpPassExecutable({ NIGHTDROP_PASS_BIN: '/usr/bin/pass' }), '/usr/bin/pass');
   assert.throws(() => resolveSmtpPassExecutable({}), /trusted absolute pass executable/);
   assert.throws(
-    () => resolveSmtpPassExecutable({ AGENT_GATE_PASS_BIN: 'pass' }),
+    () => resolveSmtpPassExecutable({ NIGHTDROP_PASS_BIN: 'pass' }),
     /trusted absolute pass executable/
   );
 
@@ -82,7 +82,7 @@ test('SMTP setup requires an absolute pass executable selected by the trusted wr
 test('SMTP setup CLI accepts only a Gmail preset and a non-secret config path', () => {
   assert.deepEqual(parseSmtpSetupArgs(['gmail']), {
     provider: 'gmail',
-    configPath: '/opt/agent-gate/config/config.yaml'
+    configPath: '/opt/nightdrop/config/config.yaml'
   });
   assert.deepEqual(parseSmtpSetupArgs(['gmail', '--config', '/safe/config.yaml']), {
     provider: 'gmail',
@@ -90,7 +90,7 @@ test('SMTP setup CLI accepts only a Gmail preset and a non-secret config path', 
   });
   assert.deepEqual(parseSmtpSetupArgs(['gmail', '--profile', 'personal']), {
     provider: 'gmail',
-    configPath: '/opt/agent-gate/config/config.yaml',
+    configPath: '/opt/nightdrop/config/config.yaml',
     profile: 'personal'
   });
   assert.throws(() => parseSmtpSetupArgs(['gmail', '--profile', 'UPPER']), /safe profile name/);
@@ -139,12 +139,12 @@ test('Gmail SMTP verification replaces provider errors with a fixed redacted err
 });
 
 test('SMTP onboarding stores one versioned password and atomically activates safe Gmail metadata', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-smtp-persist-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-smtp-persist-'));
   try {
     const configPath = join(dir, 'config.yaml');
     await writeFile(configPath, `
 telegram:
-  botToken: "\${PASS:agent-gate/telegram-bot-token}"
+  botToken: "\${PASS:nightdrop/telegram-bot-token}"
   allowedUsers: [2061243435]
 watch:
   directory: ./drafts/inbox
@@ -177,7 +177,7 @@ audit:
 
     assert.equal(stored.size, 1);
     const [passwordKey] = [...stored.keys()];
-    assert.match(passwordKey, /^agent-gate\/smtp-password-[a-f0-9]{24}$/);
+    assert.match(passwordKey, /^nightdrop\/smtp-password-[a-f0-9]{24}$/);
     assert.equal(stored.get(passwordKey), 'gmail-app-password');
 
     const parsed = YAML.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
@@ -200,7 +200,7 @@ audit:
 });
 
 test('SMTP onboarding rejects an invalid provider name before writing a password', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-smtp-invalid-provider-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-smtp-invalid-provider-'));
   try {
     const configPath = join(dir, 'config.yaml');
     await writeFile(configPath, 'providers: {}\ndefaults:\n  provider: log\n', {

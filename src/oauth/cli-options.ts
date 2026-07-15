@@ -14,7 +14,7 @@ export function parseOAuthSetupArgs(args: string[]): OAuthSetupOptions {
     throw new Error('Provider must be one of: gmail, outlook, zoho');
   }
 
-  let configPath = '/opt/agent-gate/config/config.yaml';
+  let configPath = '/opt/nightdrop/config/config.yaml';
   let port = 8765;
   let deviceCode = false;
   let profile: string | undefined;
@@ -55,7 +55,7 @@ export function parseOAuthSetupArgs(args: string[]): OAuthSetupOptions {
     throw new Error('--device-code is only valid for outlook');
   }
   if (profile && providerValue !== 'outlook') {
-    throw new Error('--profile is only valid for outlook; use agent-gate-smtp-setup for Gmail mailbox profiles');
+    throw new Error('--profile is only valid for outlook; use nightdrop-smtp-setup for Gmail mailbox profiles');
   }
   return { provider: providerValue, configPath, port, deviceCode, ...(profile ? { profile } : {}) };
 }

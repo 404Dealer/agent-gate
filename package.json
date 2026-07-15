@@ -1,19 +1,22 @@
 {
-  "name": "agent-gate",
+  "name": "nightdrop",
   "version": "0.1.0",
   "description": "Deterministic approval layer between AI agents and external actions",
   "type": "module",
   "bin": {
-    "agent-gate": "./dist/index.js",
-    "agent-gate-oauth": "./dist/oauth-setup.js",
-    "agent-gate-smtp-setup": "./dist/smtp-setup.js",
-    "agent-gate-mailbox-cleanup": "./dist/mailbox-cleanup.js",
-    "agent-gate-mailbox": "./dist/mailbox-client.js"
+    "nightdrop": "./dist/index.js",
+    "nightdrop-oauth": "./scripts/oauth-setup.sh",
+    "nightdrop-smtp-setup": "./scripts/smtp-setup.sh",
+    "nightdrop-mailbox-cleanup": "./scripts/mailbox-cleanup.sh",
+    "nightdrop-mailbox": "./dist/mailbox-client.js"
   },
   "files": [
     "dist/",
     "docs/",
-    "config.example.yaml"
+    "config.example.yaml",
+    "scripts/oauth-setup.sh",
+    "scripts/smtp-setup.sh",
+    "scripts/mailbox-cleanup.sh"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -36,11 +39,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/404Dealer/agent-gate.git"
+    "url": "git+https://github.com/404Dealer/nightdrop.git"
   },
-  "homepage": "https://github.com/404Dealer/agent-gate#readme",
+  "homepage": "https://github.com/404Dealer/nightdrop#readme",
   "bugs": {
-    "url": "https://github.com/404Dealer/agent-gate/issues"
+    "url": "https://github.com/404Dealer/nightdrop/issues"
   },
   "engines": {
     "node": ">=22.0.0"

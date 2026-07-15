@@ -1,6 +1,6 @@
 # Gmail App Password SMTP Onboarding
 
-This is the simplest self-hosted Gmail path for agent-gate. It uses Gmail's authenticated SMTP service, similar to common Himalaya configurations, and does **not** require a Google Cloud project, OAuth consent screen, Gmail API enablement, client ID, callback URL, or OAuth app verification.
+This is the simplest self-hosted Gmail path for Nightdrop. It uses Gmail's authenticated SMTP service, similar to common Himalaya configurations, and does **not** require a Google Cloud project, OAuth consent screen, Gmail API enablement, client ID, callback URL, or OAuth app verification.
 
 ## Security trade-off
 
@@ -9,7 +9,7 @@ This is the simplest self-hosted Gmail path for agent-gate. It uses Gmail's auth
 | Gmail App Password + SMTP | Simple | Broad, long-lived Google mail credential |
 | Gmail API OAuth (`gmail.send`) | More involved | Narrow send-only API scope |
 
-Google recommends OAuth/“Sign in with Google” where available. An App Password is easier for a self-hosted operator, but it is more powerful than the Gmail API `gmail.send` refresh token. Keep it only under the isolated `agentgate` Unix user and revoke it when no longer needed.
+Google recommends OAuth/“Sign in with Google” where available. An App Password is easier for a self-hosted operator, but it is more powerful than the Gmail API `gmail.send` refresh token. Keep it only under the isolated `nightdrop` Unix user and revoke it when no longer needed.
 
 Hermes must never receive, type, print, or store the App Password. The human enters it directly into the installed root-owned setup wrapper from a terminal Hermes is not controlling.
 
@@ -36,14 +36,14 @@ See Google's official guidance: [Sign in with app passwords](https://support.goo
 Run personally from a human-controlled SSH/local terminal:
 
 ```bash
-sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
+sudo /opt/nightdrop/scripts/configure-provider-secrets.sh telegram
 ```
 
 ### 2. Create a dedicated Google App Password
 
 1. Open [Google App Passwords](https://myaccount.google.com/apppasswords) in your own browser.
 2. Sign in and complete 2-Step Verification.
-3. Create a password named `agent-gate`.
+3. Create a password named `nightdrop`.
 4. Keep the generated value on screen only until the next step.
 
 Do not paste it into Telegram, Hermes, shell arguments, environment variables, issue comments, or configuration files.
@@ -51,14 +51,14 @@ Do not paste it into Telegram, Hermes, shell arguments, environment variables, i
 ### 3. Run the Gmail SMTP setup helper
 
 ```bash
-sudo /opt/agent-gate/scripts/smtp-setup.sh gmail
+sudo /opt/nightdrop/scripts/smtp-setup.sh gmail
 ```
 
 To create separate named mailbox profiles, run the helper once per Gmail account:
 
 ```bash
-sudo /opt/agent-gate/scripts/smtp-setup.sh gmail --profile personal
-sudo /opt/agent-gate/scripts/smtp-setup.sh gmail --profile business
+sudo /opt/nightdrop/scripts/smtp-setup.sh gmail --profile personal
+sudo /opt/nightdrop/scripts/smtp-setup.sh gmail --profile business
 ```
 
 Each profiled run authenticates a separate account and atomically writes a `gmail-<profile>` provider plus `mailboxProfiles.<profile>`. Profile names start with a lowercase letter and contain only lowercase letters, digits, or hyphens (maximum 32 characters).
@@ -73,12 +73,12 @@ The helper prompts for:
 The wrapper then:
 
 1. verifies that it and the installed runtime are root-owned and not writable by non-root users;
-2. drops privileges to `agentgate` with a clean environment;
+2. drops privileges to `nightdrop` with a clean environment;
 3. normalizes Google's grouped 16-character App Password;
 4. verifies authentication against `smtp.gmail.com:465` with certificate-verified implicit TLS;
-5. stores one versioned password under the `agentgate` `pass` store;
+5. stores one versioned password under the `nightdrop` `pass` store;
 6. atomically writes only a `${PASS:...}` reference plus safe sender metadata to private config;
-7. restarts `agent-gate.service`; and
+7. restarts `nightdrop.service`; and
 8. requires three consecutive active health checks.
 
 The password is never printed. SMTP provider error responses are replaced with fixed redacted messages.
@@ -95,7 +95,7 @@ providers:
     port: 465
     tlsMode: implicit
     username: you@gmail.com
-    password: "${PASS:agent-gate/smtp-password-<version>}"
+    password: "${PASS:nightdrop/smtp-password-<version>}"
     fromAddress: you@gmail.com
     displayName: Your Name
 ```
@@ -112,10 +112,10 @@ mailboxProfiles:
 
 ## Optional human-gated unread cleanup
 
-The verified Gmail App Password can also be used inside the same isolated `agentgate` boundary to mark unread Spam and Trash messages as read:
+The verified Gmail App Password can also be used inside the same isolated `nightdrop` boundary to mark unread Spam and Trash messages as read:
 
 ```bash
-sudo /opt/agent-gate/scripts/mailbox-cleanup.sh gmail
+sudo /opt/nightdrop/scripts/mailbox-cleanup.sh gmail
 ```
 
 This is a separate interactive operation. It previews counts and requires the exact phrase `MARK READ`; it does not delete, move, empty, fetch, or display messages and does not restart the service. See [mailbox-cleanup.md](mailbox-cleanup.md) for full security and recovery semantics.
@@ -132,7 +132,7 @@ providers:
     port: 587
     tlsMode: starttls
     username: you@example.com
-    password: "${PASS:agent-gate/smtp-password-work}"
+    password: "${PASS:nightdrop/smtp-password-work}"
     fromAddress: you@example.com
     displayName: Your Name
 ```
@@ -148,7 +148,7 @@ Unencrypted SMTP is not supported. Certificate verification is always enabled. T
 
 ## Partial recipient delivery
 
-SMTP can accept some approved recipients while rejecting others. Agent-gate treats this as a non-retryable partial result:
+SMTP can accept some approved recipients while rejecting others. Nightdrop treats this as a non-retryable partial result:
 
 - the draft is archived under `sent`, not `failed`, because retrying could duplicate delivery;
 - audit records action `partial`, accepted/rejected counts, and rejected addresses only when they match the approved recipient list;
@@ -161,9 +161,9 @@ SMTP can accept some approved recipients while rejecting others. Agent-gate trea
 To remove Gmail SMTP capability:
 
 1. Open [Google App Passwords](https://myaccount.google.com/apppasswords).
-2. Delete the `agent-gate` App Password.
-3. Remove or disable the corresponding provider (`gmail-smtp` for the compatibility account or `gmail-<profile>` for a named account) and remove its `mailboxProfiles.<profile>` binding, if present, from private agent-gate config.
-4. Restart `agent-gate.service`.
+2. Delete the `nightdrop` App Password.
+3. Remove or disable the corresponding provider (`gmail-smtp` for the compatibility account or `gmail-<profile>` for a named account) and remove its `mailboxProfiles.<profile>` binding, if present, from private Nightdrop config.
+4. Restart `nightdrop.service`.
 
 Google also revokes App Passwords after a Google Account password change.
 
@@ -188,8 +188,8 @@ Create a new dedicated App Password and retry if needed.
 ### Service does not remain active
 
 ```bash
-sudo systemctl status agent-gate --no-pager
-sudo journalctl -u agent-gate -n 100 --no-pager
+sudo systemctl status nightdrop --no-pager
+sudo journalctl -u nightdrop -n 100 --no-pager
 ```
 
 Service logs should contain only fixed/redacted SMTP failures, never the App Password or raw SMTP response.

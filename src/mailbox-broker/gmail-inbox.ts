@@ -1,6 +1,6 @@
 import { ImapFlow, type FetchMessageObject } from 'imapflow';
 import { simpleParser } from 'mailparser';
-import type { AgentGateConfig } from '../config.js';
+import type { NightdropConfig } from '../config.js';
 import { buildGmailImapOptions } from '../mailbox/gmail-imap.js';
 import type { MailboxAdapter, MailboxMarkReadResult } from './adapter.js';
 import { decodeGmailInboxReference, encodeInboxReference } from './reference.js';
@@ -85,7 +85,7 @@ const listItem = (message: FetchMessageObject, uidValidity: string, profile?: st
   };
 };
 
-export function credentialsFromConfig(config: AgentGateConfig): BrokerCredentials | null {
+export function credentialsFromConfig(config: NightdropConfig): BrokerCredentials | null {
   const provider = config.providers['gmail-smtp'];
   if (
     !provider ||

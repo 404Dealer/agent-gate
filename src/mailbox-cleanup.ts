@@ -36,7 +36,7 @@ const defaultDependencies: MailboxCleanupCommandDependencies = {
   createConnection: (credentials) => new GmailImapCleanupConnection(credentials),
   prompt: (question) => promptLiteral(question),
   recordAudit: (event) => recordMailboxCleanupAudit(
-    process.env.AGENT_GATE_AUDIT_LOG,
+    process.env.NIGHTDROP_AUDIT_LOG,
     event
   ),
   write: (message) => console.log(message)
@@ -172,7 +172,7 @@ export async function runMailboxCleanupCommand(
   return result;
 }
 
-const usage = (): string => `Usage: agent-gate-mailbox-cleanup gmail [--config PATH]
+const usage = (): string => `Usage: nightdrop-mailbox-cleanup gmail [--config PATH]
 
 Interactively marks the previewed unread Gmail Spam and Trash UID snapshot as read.
 Run only through scripts/mailbox-cleanup.sh from a human-controlled SSH/local terminal.
@@ -188,7 +188,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   }
   const uid = process.getuid?.();
   if (uid === undefined || uid === 0) {
-    throw new Error('Mailbox cleanup must run as the isolated agentgate user, never as root');
+    throw new Error('Mailbox cleanup must run as the isolated nightdrop user, never as root');
   }
   await runMailboxCleanupCommand(parseMailboxCleanupArgs(args));
 }

@@ -10,6 +10,9 @@ const TelegramConfigSchema = z.object({
   allowedUsers: z.array(z.number().int()).min(1)
 });
 
+const PASS_KEY_PATTERN = /^nightdrop\/[a-z0-9][a-z0-9-]*$/;
+const ENVIRONMENT_NAME_PATTERN = /^NIGHTDROP_[A-Z0-9_]+$/;
+
 const WatchConfigSchema = z.object({
   directory: z.string().default('./drafts/inbox'),
   pollIntervalMs: z.number().int().positive().default(2000)
@@ -74,7 +77,7 @@ const ProviderSchema = z.discriminatedUnion('type', [
     clientId: z.string().min(1),
     clientSecret: z.string().min(1).optional(),
     refreshToken: z.string().min(1),
-    refreshTokenKey: z.string().regex(/^agent-gate\/[a-z0-9][a-z0-9-]*$/).optional(),
+    refreshTokenKey: z.string().regex(PASS_KEY_PATTERN).optional(),
     tenantId: z.string().min(1).default('common'),
     userId: z.string().min(1).optional(),
     mailboxAccess: z.boolean().optional(),
@@ -112,19 +115,19 @@ const ConfigSchema = z.object({
   }
 });
 
-export type AgentGateConfig = z.infer<typeof ConfigSchema>;
+export type NightdropConfig = z.infer<typeof ConfigSchema>;
 export type ProviderConfig = z.infer<typeof ProviderSchema>;
 
 function resolvePlaceholder(name: string): string {
   if (name.startsWith('PASS:')) {
     const key = name.slice('PASS:'.length);
-    if (!key) {
-      throw new Error('Missing pass key in ${PASS:key} placeholder');
+    if (!PASS_KEY_PATTERN.test(key)) {
+      throw new Error('Pass placeholders must use the nightdrop/* namespace');
     }
 
     try {
-      const passExecutable = process.env.AGENT_GATE_PASS_BIN ?? 'pass';
-      if (process.env.AGENT_GATE_PASS_BIN && !isAbsolute(passExecutable)) {
+      const passExecutable = process.env.NIGHTDROP_PASS_BIN ?? 'pass';
+      if (process.env.NIGHTDROP_PASS_BIN && !isAbsolute(passExecutable)) {
         throw new Error('Configured pass executable must be absolute');
       }
       return execFileSync(passExecutable, ['show', key], { encoding: 'utf8' }).trimEnd();
@@ -133,6 +136,9 @@ function resolvePlaceholder(name: string): string {
     }
   }
 
+  if (!ENVIRONMENT_NAME_PATTERN.test(name)) {
+    throw new Error('Environment placeholders must use NIGHTDROP_* names');
+  }
   const envValue = process.env[name];
   if (envValue === undefined) {
     throw new Error(`Unresolved placeholder: \${${name}}`);
@@ -173,8 +179,8 @@ function validateOutlookRefreshTokenBindings(value: unknown): void {
   }
 }
 
-export async function loadConfig(configPath?: string): Promise<AgentGateConfig> {
-  const path = resolve(configPath ?? process.env.AGENT_GATE_CONFIG ?? 'config.yaml');
+export async function loadConfig(configPath?: string): Promise<NightdropConfig> {
+  const path = resolve(configPath ?? process.env.NIGHTDROP_CONFIG ?? 'config.yaml');
   const raw = await readFile(path, 'utf8');
   const parsed = YAML.parse(raw);
   validateOutlookRefreshTokenBindings(parsed);

@@ -7,7 +7,7 @@ interface PassSecretStoreOptions {
   timeoutMs?: number;
 }
 
-const VALID_PASS_KEY = /^agent-gate\/[a-z0-9][a-z0-9-]*$/;
+const VALID_PASS_KEY = /^nightdrop\/[a-z0-9][a-z0-9-]*$/;
 
 export class PassSecretStore {
   private readonly executable: string;
@@ -16,7 +16,7 @@ export class PassSecretStore {
 
   constructor(options: PassSecretStoreOptions = {}) {
     this.env = options.env ?? process.env;
-    const configuredExecutable = options.executable ?? this.env.AGENT_GATE_PASS_BIN;
+    const configuredExecutable = options.executable ?? this.env.NIGHTDROP_PASS_BIN;
     if (configuredExecutable !== undefined && !isAbsolute(configuredExecutable)) {
       throw new Error('Configured password-store executable must be absolute');
     }
@@ -29,7 +29,7 @@ export class PassSecretStore {
 
   async set(key: string, value: string): Promise<void> {
     if (!VALID_PASS_KEY.test(key)) {
-      throw new Error('Invalid agent-gate pass key');
+      throw new Error('Invalid Nightdrop pass key');
     }
     if (!value || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value)) {
       throw new Error('Secret must be a non-empty printable single-line value');

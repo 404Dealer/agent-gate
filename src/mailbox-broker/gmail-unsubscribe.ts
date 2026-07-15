@@ -357,7 +357,7 @@ export async function executeHttpsUnsubscribe(
           Host: snapshot.endpointHost,
           'Content-Type': 'application/x-www-form-urlencoded',
           'Content-Length': Buffer.byteLength(ONE_CLICK_BODY),
-          'User-Agent': 'agent-gate/0.1 unsubscribe'
+          'User-Agent': 'nightdrop/0.1 unsubscribe'
         }
       }, (response) => {
         const status = response.statusCode ?? 0;

@@ -1,12 +1,12 @@
-# Contributing to agent-gate
+# Contributing to Nightdrop
 
 Thanks for your interest in contributing! Here's how to get started.
 
 ## Development Setup
 
 ```bash
-git clone https://github.com/404Dealer/agent-gate.git
-cd agent-gate
+git clone https://github.com/404Dealer/nightdrop.git
+cd nightdrop
 npm install
 cp config.example.yaml config.yaml
 # Set up a test Telegram bot via @BotFather and add your token + user ID

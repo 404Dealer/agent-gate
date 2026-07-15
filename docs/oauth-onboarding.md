@@ -1,19 +1,19 @@
 # Secure OAuth Onboarding
 
-`agent-gate` can obtain Gmail, Outlook/Microsoft 365, and Zoho Mail send credentials without exposing authorization codes or tokens to Hermes.
+Nightdrop can obtain Gmail, Outlook/Microsoft 365, and Zoho Mail send credentials without exposing authorization codes or tokens to Hermes.
 
 ## Security boundary
 
 Run onboarding only from a human-controlled local console or SSH terminal:
 
 ```text
-human terminal -> agentgate-owned OAuth process -> provider -> encrypted pass store
+human terminal -> nightdrop-owned OAuth process -> provider -> encrypted pass store
 ```
 
 The production helper:
 
 - must be launched by a human in a real TTY;
-- drops from root to the isolated `agentgate` account with a clean environment;
+- drops from root to the isolated `nightdrop` account with a clean environment;
 - accepts no authorization code, token, or client-secret command-line option;
 - binds callbacks only to remote `127.0.0.1`;
 - validates a random `state` value and PKCE S256 for every browser callback flow;
@@ -23,27 +23,27 @@ The production helper:
 - writes only versioned `${PASS:...}` references and safe metadata to `config.yaml`;
 - atomically preserves private `0600` configuration;
 - never prints authorization codes, access tokens, or refresh tokens;
-- restarts `agent-gate` only after all persistence succeeds.
+- restarts `nightdrop.service` only after all persistence succeeds.
 
-The installer keeps the root-invoked scripts and their directory root-owned so the `agentgate` service account cannot replace a helper before `sudo` execution.
+The installer keeps the root-invoked scripts and their directory root-owned so the `nightdrop` service account cannot replace a helper before `sudo` execution.
 
 > Do **not** invoke onboarding through Hermes or paste provider responses into chat. Hermes may install and verify the non-secret infrastructure; only the human runs authorization.
 
 ## Common prerequisites
 
-1. Install `agent-gate` in production mode.
-2. Initialize `/home/agentgate/.gnupg` and `/home/agentgate/.password-store`.
+1. Install Nightdrop in production mode.
+2. Initialize `/home/nightdrop/.gnupg` and `/home/nightdrop/.password-store`.
 3. From a human-controlled terminal, store the dedicated approval-bot token first:
 
 ```bash
-sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
+sudo /opt/nightdrop/scripts/configure-provider-secrets.sh telegram
 ```
 
 4. Keep `defaults.provider: log` until onboarding and a controlled test succeed.
 5. Verify the installed helper:
 
 ```bash
-cd /opt/agent-gate
+cd /opt/nightdrop
 sudo scripts/oauth-setup.sh --help
 ```
 
@@ -86,7 +86,7 @@ sudo scripts/oauth-setup.sh PROVIDER --port 9876
 3. Configure the OAuth consent screen.
 4. Create an OAuth client of type **Desktop app**.
 5. If the consent screen is in Testing, add the intended account as a test user.
-6. Record the client ID. A Desktop client is public; `agent-gate` does **not** request or store a Google client secret.
+6. Record the client ID. A Desktop client is public; Nightdrop does **not** request or store a Google client secret.
 
 The helper requests:
 
@@ -115,15 +115,15 @@ Google may return a refresh token only during qualifying authorization. The help
 With the SSH tunnel active:
 
 ```bash
-cd /opt/agent-gate
+cd /opt/nightdrop
 sudo scripts/oauth-setup.sh gmail
 ```
 
-The helper asks only for the public client ID and an optional display name, receives the PKCE callback, verifies the returned scopes and Google identity, then stores:
+The helper asks only for the public client ID and an optional display name, receives the PKCE callback, verifies the returned scopes and Google identity, then stores versioned keys. `<transaction>` is the same random 24-character lowercase hexadecimal suffix for every key written by that onboarding transaction:
 
 ```text
-agent-gate/google-client-id
-agent-gate/google-refresh-token
+nightdrop/google-client-id-<transaction>
+nightdrop/google-refresh-token-<transaction>
 ```
 
 No Google client secret is needed or stored.
@@ -156,7 +156,7 @@ The helper also requests `offline_access` so Microsoft can issue a refresh token
 With the SSH tunnel active:
 
 ```bash
-cd /opt/agent-gate
+cd /opt/nightdrop
 sudo scripts/oauth-setup.sh outlook
 ```
 
@@ -185,17 +185,17 @@ For durable rotation, `refreshTokenKey` is accepted only when `refreshToken` is 
 Device authorization is convenient for truly headless environments but current Microsoft guidance treats it as higher risk, and Conditional Access may block it. Use it only when the SSH-forwarded PKCE callback is unavailable:
 
 ```bash
-cd /opt/agent-gate
+cd /opt/nightdrop
 sudo scripts/oauth-setup.sh outlook --device-code
 ```
 
 For this fallback, enable **Allow public client flows** in the Entra app. The helper validates that the verification URL is an HTTPS Microsoft host, follows provider polling intervals, handles `authorization_pending` and `slow_down`, and stops on denial, invalid code, or expiry. No SSH tunnel is needed for the fallback.
 
-The public-client flow stores:
+The public-client flow stores versioned keys with the same per-onboarding transaction suffix:
 
 ```text
-agent-gate/microsoft-client-id
-agent-gate/microsoft-refresh-token
+nightdrop/microsoft-client-id-<transaction>
+nightdrop/microsoft-refresh-token-<transaction>
 ```
 
 No Microsoft client secret is needed.
@@ -243,11 +243,11 @@ The selected region independently pins both Accounts and Mail API hosts. Arbitra
 With the SSH tunnel active:
 
 ```bash
-cd /opt/agent-gate
+cd /opt/nightdrop
 sudo scripts/oauth-setup.sh zoho
 ```
 
-Choose the same data center used for the OAuth client and mailbox. The helper receives the exact callback, exchanges the code with PKCE, enumerates eligible senders, asks for an explicit selection, and stores the client credentials and refresh token directly in `agentgate`'s encrypted store. At send time, agent-gate reuses each Zoho access token until shortly before its provider-reported expiry to stay within Zoho token limits.
+Choose the same data center used for the OAuth client and mailbox. The helper receives the exact callback, exchanges the code with PKCE, enumerates eligible senders, asks for an explicit selection, and stores the client credentials and refresh token directly in `nightdrop`'s encrypted store. At send time, Nightdrop reuses each Zoho access token until shortly before its provider-reported expiry to stay within Zoho token limits.
 
 ---
 
@@ -256,18 +256,18 @@ Choose the same data center used for the OAuth client and mailbox. The helper re
 List secret **names** without printing values:
 
 ```bash
-sudo -u agentgate env \
-  HOME=/home/agentgate \
-  GNUPGHOME=/home/agentgate/.gnupg \
-  PASSWORD_STORE_DIR=/home/agentgate/.password-store \
-  pass ls agent-gate
+sudo -u nightdrop env \
+  HOME=/home/nightdrop \
+  GNUPGHOME=/home/nightdrop/.gnupg \
+  PASSWORD_STORE_DIR=/home/nightdrop/.password-store \
+  pass ls nightdrop
 ```
 
 Check non-secret service health:
 
 ```bash
-sudo systemctl status agent-gate --no-pager
-sudo journalctl -u agent-gate -n 100 --no-pager
+sudo systemctl status nightdrop --no-pager
+sudo journalctl -u nightdrop -n 100 --no-pager
 ```
 
 Do not run `pass show`, print config after secret resolution, or include token endpoint responses in support messages.

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { decodeInboxReference, decodeUniqueInboxReferences } from './reference.js';
 
-export const MAILBOX_SOCKET_PATH = '/run/agent-gate-mailbox/broker.sock';
+export const MAILBOX_SOCKET_PATH = '/run/nightdrop-mailbox/broker.sock';
 export const MAX_REQUEST_BYTES = 96 * 1024;
 export const MAX_RESPONSE_BYTES = 1024 * 1024;
 

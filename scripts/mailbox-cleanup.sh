@@ -7,7 +7,7 @@ set -euo pipefail
 readonly TRUSTED_PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 export PATH="$TRUSTED_PATH"
 
-SERVICE_USER="agentgate"
+SERVICE_USER="nightdrop"
 SCRIPT_PATH="$(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}")"
 INSTALL_DIR="$(cd "$(/usr/bin/dirname -- "$SCRIPT_PATH")/.." && pwd -P)"
 CONFIG_PATH="$INSTALL_DIR/config/config.yaml"
@@ -18,34 +18,37 @@ usage() {
     "" \
     "Previews unread Gmail Spam and Trash counts, then requires the exact phrase" \
     "MARK READ before changing only the snapshotted messages. Nothing is deleted," \
-    "moved, archived, or emptied. The Gmail App Password stays inside agentgate."
+    "moved, archived, or emptied. The Gmail App Password stays inside the Nightdrop service account."
 }
 
 validate_trusted_path() {
-  local directory owner mode permissions
+  local directory canonical
   local -a directories=()
   IFS=':' read -r -a directories <<< "$TRUSTED_PATH"
   for directory in "${directories[@]}"; do
     [[ -d "$directory" ]] || continue
-    read -r owner mode < <(/usr/bin/stat -Lc '%U %a' -- "$directory")
-    permissions=$((8#$mode))
-    if [[ "$owner" != "root" ]] || (( (permissions & 8#022) != 0 )); then
-      echo "Refusing untrusted executable path directory: $directory" >&2
+    canonical="$(/usr/bin/readlink -e -- "$directory")" || return 1
+    [[ -d "$canonical" ]] || return 1
+    assert_trusted_ancestor_chain "$canonical" || {
+      echo "Refusing untrusted executable path directory or ancestor: $directory" >&2
       return 1
-    fi
+    }
   done
 }
 
 assert_trusted_ancestor_chain() {
-  local current="$1" owner mode permissions
-  while [[ "$current" != "/" ]]; do
-    read -r owner mode < <(/usr/bin/stat -Lc '%U %a' -- "$current")
+  local current="$1" owner mode permissions parent
+  while true; do
+    read -r owner mode < <(/usr/bin/stat -Lc '%U %a' -- "$current") || return 1
     permissions=$((8#$mode))
     if [[ "$owner" != "root" ]] || (( (permissions & 8#022) != 0 )); then
       echo "Refusing non-root-owned or writable privileged path: $current" >&2
       return 1
     fi
-    current="$(/usr/bin/dirname -- "$current")"
+    [[ "$current" == "/" ]] && break
+    parent="$(/usr/bin/dirname -- "$current")" || return 1
+    [[ "$parent" != "$current" ]] || return 1
+    current="$parent"
   done
 }
 
@@ -99,12 +102,12 @@ if ! ENV_BIN="$(resolve_trusted_executable env)"; then
   exit 1
 fi
 if [[ ! -f "$INSTALL_DIR/dist/mailbox-cleanup.js" || -L "$INSTALL_DIR/dist/mailbox-cleanup.js" ]]; then
-  echo "Mailbox cleanup executable is missing or unsafe. Reinstall agent-gate first." >&2
+  echo "Mailbox cleanup executable is missing or unsafe. Reinstall Nightdrop first." >&2
   exit 1
 fi
 assert_trusted_ancestor_chain "$INSTALL_DIR/dist/mailbox-cleanup.js"
 if [[ ! -f "$CONFIG_PATH" || -L "$CONFIG_PATH" ]]; then
-  echo "Agent-gate config is missing or unsafe: $CONFIG_PATH" >&2
+  echo "Nightdrop config is missing or unsafe: $CONFIG_PATH" >&2
   exit 1
 fi
 
@@ -116,6 +119,6 @@ fi
   TERM="dumb" \
   GNUPGHOME="/home/$SERVICE_USER/.gnupg" \
   PASSWORD_STORE_DIR="/home/$SERVICE_USER/.password-store" \
-  AGENT_GATE_PASS_BIN="$PASS_BIN" \
-  AGENT_GATE_AUDIT_LOG="$INSTALL_DIR/audit.log" \
+  NIGHTDROP_PASS_BIN="$PASS_BIN" \
+  NIGHTDROP_AUDIT_LOG="$INSTALL_DIR/audit.log" \
   "$NODE_BIN" "$INSTALL_DIR/dist/mailbox-cleanup.js" "gmail" --config "$CONFIG_PATH"

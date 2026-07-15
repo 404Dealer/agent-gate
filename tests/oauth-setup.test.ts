@@ -11,7 +11,7 @@ import { persistGmailOnboarding, persistOutlookOnboarding, persistZohoOnboarding
 import { parseOAuthSetupArgs } from '../src/oauth/cli-options.js';
 import { buildZohoAuthorizationUrl, exchangeZohoAuthorizationCode, fetchZohoSenderChoices, getZohoRegionEndpoints, validateZohoCallbackRegion } from '../src/oauth/zoho.js';
 import { parseSelection, sanitizeTerminalText } from '../src/oauth/selection.js';
-import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -20,9 +20,9 @@ import YAML from 'yaml';
 const assertVersionedCredentialKeys = (keys: string[], bases: string[]): string => {
   assert.equal(keys.length, bases.length);
   const suffixes = bases.map((base) => {
-    const key = keys.find((candidate) => candidate.startsWith(`agent-gate/${base}-`));
+    const key = keys.find((candidate) => candidate.startsWith(`nightdrop/${base}-`));
     assert(key, `missing versioned key for ${base}`);
-    const match = key.match(new RegExp(`^agent-gate/${base}-([a-f0-9]{24})$`));
+    const match = key.match(new RegExp(`^nightdrop/${base}-([a-f0-9]{24})$`));
     assert(match, `invalid versioned key for ${base}`);
     return match[1];
   });
@@ -36,21 +36,21 @@ test('PKCE challenge matches the RFC 7636 S256 example', () => {
 });
 
 test('OAuth setup CLI accepts only non-secret options and makes device code Outlook-only', () => {
-  assert.deepEqual(parseOAuthSetupArgs(['gmail', '--config', '/opt/agent-gate/config/config.yaml', '--port', '8765']), {
+  assert.deepEqual(parseOAuthSetupArgs(['gmail', '--config', '/opt/nightdrop/config/config.yaml', '--port', '8765']), {
     provider: 'gmail',
-    configPath: '/opt/agent-gate/config/config.yaml',
+    configPath: '/opt/nightdrop/config/config.yaml',
     port: 8765,
     deviceCode: false
   });
   assert.deepEqual(parseOAuthSetupArgs(['outlook', '--device-code']), {
     provider: 'outlook',
-    configPath: '/opt/agent-gate/config/config.yaml',
+    configPath: '/opt/nightdrop/config/config.yaml',
     port: 8765,
     deviceCode: true
   });
   assert.deepEqual(parseOAuthSetupArgs(['outlook', '--profile', 'work']), {
     provider: 'outlook',
-    configPath: '/opt/agent-gate/config/config.yaml',
+    configPath: '/opt/nightdrop/config/config.yaml',
     port: 8765,
     deviceCode: false,
     profile: 'work'
@@ -78,8 +78,8 @@ test('production installer validates canonical safe arguments without side effec
     { encoding: 'utf8' }
   ).status;
 
-  assert.equal(validate('validate_install_dir', '/opt/agent-gate'), 0);
-  for (const unsafePath of ['/', '/opt', '/tmp/agent-gate', '/opt/../etc', '/opt//agent-gate', '/opt/agent-gate\nInjected=true']) {
+  assert.equal(validate('validate_install_dir', '/opt/nightdrop'), 0);
+  for (const unsafePath of ['/', '/opt', '/tmp/nightdrop', '/opt/../etc', '/opt//nightdrop', '/opt/nightdrop\nInjected=true']) {
     assert.notEqual(validate('validate_install_dir', unsafePath), 0, unsafePath);
   }
 
@@ -91,6 +91,538 @@ test('production installer validates canonical safe arguments without side effec
   assert.equal(validate('validate_agent_user', 'spacex'), 0);
   for (const unsafeUser of ['root;id', '--help', 'UpperCase', 'space user']) {
     assert.notEqual(validate('validate_agent_user', unsafeUser), 0, unsafeUser);
+  }
+
+  const validateAgentIdentity = (name: string, uid: string, duplicateUid = false): number | null => spawnSync(
+    '/bin/bash',
+    [
+      '-c',
+      [
+        'source "$1"',
+        'MOCK_NAME="$2"',
+        'MOCK_UID="$3"',
+        'MOCK_DUPLICATE="$4"',
+        'id() { if [[ "$1" == "-u" ]]; then printf "%s\\n" "$MOCK_UID"; else return 0; fi; }',
+        'getent() { [[ "$1" == "passwd" ]] || return 1; printf "%s:x:%s:1000::/home/%s:/bin/bash\\n" "$MOCK_NAME" "$MOCK_UID" "$MOCK_NAME"; if [[ "$MOCK_DUPLICATE" == "true" ]]; then printf "alias:x:%s:1001::/home/alias:/bin/bash\\n" "$MOCK_UID"; fi; }',
+        'if validate_agent_identity "$MOCK_NAME"; then exit 0; else exit 1; fi'
+      ].join('; '),
+      'installer-agent-identity',
+      installerPath,
+      name,
+      uid,
+      String(duplicateUid)
+    ],
+    { encoding: 'utf8' }
+  ).status;
+  assert.equal(validateAgentIdentity('hermes', '1000'), 0);
+  assert.notEqual(validateAgentIdentity('administrator', '0'), 0);
+  assert.notEqual(validateAgentIdentity('hermes', '1000', true), 0);
+
+  const validateAgentSnapshot = (snapshotUid: string, currentUid: string): number | null => spawnSync('/bin/bash', [
+    '-c',
+    [
+      'source "$1"',
+      'AGENT_USER=hermes',
+      'AGENT_UID_SNAPSHOT="$2"',
+      'CURRENT_UID="$3"',
+      'id() { printf "%s\\n" "$CURRENT_UID"; }',
+      'getent() { [[ "$1" == "passwd" ]] || return 1; printf "hermes:x:%s:1000::/home/hermes:/bin/bash\\n" "$CURRENT_UID"; }',
+      'if validate_agent_identity_snapshot; then exit 0; else exit 1; fi'
+    ].join('; '),
+    'installer-agent-snapshot',
+    installerPath,
+    snapshotUid,
+    currentUid
+  ], { encoding: 'utf8' }).status;
+  assert.equal(validateAgentSnapshot('1000', '1000'), 0);
+  assert.notEqual(validateAgentSnapshot('1000', '1001'), 0);
+});
+
+test('production installer rejects unmanaged service identity and capability-group collisions', async () => {
+  const installerPath = fileURLToPath(new URL('../scripts/install-production.sh', import.meta.url));
+  const validate = (functionName: string, values: string[]): number | null => spawnSync(
+    '/bin/bash',
+    [
+      '-c',
+      'source "$1"; shift; function_name="$1"; shift; if "$function_name" "$@"; then exit 0; else exit 1; fi',
+      'installer-identity-validation',
+      installerPath,
+      functionName,
+      ...values
+    ],
+    { encoding: 'utf8' }
+  ).status;
+
+  const lockedService = 'nightdrop:x:499:497::/home/nightdrop:/usr/sbin/nologin';
+  const primaryGroup = 'nightdrop:x:497:';
+  assert.equal(validate('validate_service_identity_record', [
+    lockedService, 'nightdrop L 2026-07-14 0 99999 7 -1', primaryGroup, '1000', '1000'
+  ]), 0);
+  for (const [record, status, group] of [
+    ['nightdrop:x:1000:497::/home/nightdrop:/usr/sbin/nologin', 'nightdrop L 2026-07-14 0 99999 7 -1', primaryGroup],
+    ['nightdrop:x:499:497::/srv/nightdrop:/usr/sbin/nologin', 'nightdrop L 2026-07-14 0 99999 7 -1', primaryGroup],
+    ['nightdrop:x:499:497::/home/nightdrop:/bin/bash', 'nightdrop L 2026-07-14 0 99999 7 -1', primaryGroup],
+    [lockedService, 'nightdrop P 2026-07-14 0 99999 7 -1', primaryGroup],
+    [lockedService, 'nightdrop L 2026-07-14 0 99999 7 -1', 'nightdrop:x:42:'],
+    [lockedService, 'nightdrop L 2026-07-14 0 99999 7 -1', 'nightdrop:x:497:unexpected']
+  ]) {
+    assert.notEqual(validate('validate_service_identity_record', [record, status, group, '1000', '1000']), 0);
+  }
+
+  assert.equal(validate('validate_capability_group_record', [
+    'nightdrop-mailbox:x:498:nightdrop,hermes', 'nightdrop-mailbox', 'nightdrop', 'hermes', '1000'
+  ]), 0);
+  for (const record of [
+    'nightdrop-mailbox:x:1000:nightdrop,hermes',
+    'nightdrop-mailbox:x:498:hermes',
+    'nightdrop-mailbox:x:498:nightdrop,hermes,unexpected',
+    'different-group:x:498:nightdrop,hermes'
+  ]) {
+    assert.notEqual(validate('validate_capability_group_record', [
+      record, 'nightdrop-mailbox', 'nightdrop', 'hermes', '1000'
+    ]), 0);
+  }
+
+  const passwdGraph = [
+    lockedService,
+    'hermes:x:1000:1000::/home/hermes:/bin/bash'
+  ].join('\n');
+  const groupGraph = [
+    primaryGroup,
+    'nightdrop-inbox:x:496:nightdrop,hermes',
+    'nightdrop-mailbox:x:495:nightdrop,hermes',
+    'hermes:x:1000:'
+  ].join('\n');
+  const graphArgs = [
+    passwdGraph, groupGraph, 'nightdrop', 'nightdrop-inbox', 'nightdrop-mailbox',
+    '499', '497', '496', '495'
+  ];
+  assert.equal(validate('validate_numeric_identity_graph', graphArgs), 0);
+  for (const [passwdRecords, groupRecords] of [
+    [`${passwdGraph}\nalias:x:499:1100::/nonexistent:/usr/sbin/nologin`, groupGraph],
+    [`${passwdGraph}\nnightdrop:x:1101:1101::/nonexistent:/usr/sbin/nologin`, groupGraph],
+    [`${passwdGraph}\nother:x:1100:497::/home/other:/bin/bash`, groupGraph],
+    [`${passwdGraph}\nother:x:1100:496::/home/other:/bin/bash`, groupGraph],
+    [passwdGraph, `${groupGraph}\nalias:x:496:`],
+    [passwdGraph, `${groupGraph}\nnightdrop-inbox:x:1102:`]
+  ]) {
+    assert.notEqual(validate('validate_numeric_identity_graph', [
+      passwdRecords, groupRecords, ...graphArgs.slice(2)
+    ]), 0);
+  }
+
+  assert.equal(validate('validate_effective_group_graph', [
+    'nightdrop nightdrop-inbox nightdrop-mailbox',
+    'hermes nightdrop-inbox nightdrop-mailbox',
+    'nightdrop', 'nightdrop-inbox', 'nightdrop-mailbox', 'hermes'
+  ]), 0);
+  for (const [serviceGroups, agentGroups] of [
+    ['nightdrop nightdrop-inbox nightdrop-mailbox docker', 'hermes nightdrop-inbox nightdrop-mailbox'],
+    ['nightdrop nightdrop-inbox nightdrop-mailbox', 'hermes docker nightdrop-inbox nightdrop-mailbox'],
+    ['nightdrop nightdrop-inbox nightdrop-mailbox', 'hermes lxd nightdrop-inbox nightdrop-mailbox'],
+    ['nightdrop nightdrop-inbox nightdrop-mailbox', 'hermes sudo nightdrop-inbox nightdrop-mailbox'],
+    ['nightdrop nightdrop-inbox', 'hermes nightdrop-inbox nightdrop-mailbox'],
+    ['nightdrop nightdrop-inbox nightdrop-mailbox', 'hermes nightdrop nightdrop-inbox nightdrop-mailbox'],
+    ['nightdrop nightdrop-inbox nightdrop-mailbox', 'hermes nightdrop-inbox']
+  ]) {
+    assert.notEqual(validate('validate_effective_group_graph', [
+      serviceGroups, agentGroups, 'nightdrop', 'nightdrop-inbox', 'nightdrop-mailbox', 'hermes'
+    ]), 0);
+  }
+
+  assert.equal(validate('validate_service_home_parent_record', ['root', 'root', '755']), 0);
+  for (const record of [
+    ['root', 'root', '700'],
+    ['root', 'root', '775'],
+    ['root', 'users', '755'],
+    ['operator', 'root', '755']
+  ]) {
+    assert.notEqual(validate('validate_service_home_parent_record', record), 0);
+  }
+  assert.equal(validate('validate_root_owned_directory_record', ['root', 'root', '755']), 0);
+  for (const record of [
+    ['root', 'root', '775'],
+    ['root', 'root', '700'],
+    ['root', 'root', '644'],
+    ['root', 'users', '755'],
+    ['operator', 'root', '755']
+  ]) {
+    assert.notEqual(validate('validate_root_owned_directory_record', record), 0);
+  }
+  assert.equal(validate('validate_root_owned_directory_chain', ['/usr/nightdrop-review-missing/path']), 0);
+  assert.notEqual(validate('validate_root_owned_directory_chain', ['/tmp/nightdrop-review-missing/path']), 0);
+
+  const validateAuditAcl = (
+    grant: boolean,
+    toolsAvailable: boolean,
+    setfaclStatus: number,
+    getfaclStatus: number,
+    aclOutput: string
+  ): number | null => spawnSync('/bin/bash', [
+    '-c',
+    [
+      'source "$1"',
+      'SETFACL_STATUS="$4"',
+      'GETFACL_STATUS="$5"',
+      'ACL_OUTPUT="$6"',
+      'setfacl() { return "$SETFACL_STATUS"; }',
+      'getfacl() { printf "%b" "$ACL_OUTPUT"; return "$GETFACL_STATUS"; }',
+      'if [[ "$3" == "true" ]]; then SETFACL_BIN=setfacl; GETFACL_BIN=getfacl; else SETFACL_BIN=""; GETFACL_BIN=""; fi',
+      'if configure_agent_audit_acl /tmp/audit "$2" hermes "$SETFACL_BIN" "$GETFACL_BIN"; then exit 0; else exit 1; fi'
+    ].join('; '),
+    'installer-audit-acl',
+    installerPath,
+    String(grant),
+    String(toolsAvailable),
+    String(setfaclStatus),
+    String(getfaclStatus),
+    aclOutput
+  ], { encoding: 'utf8' }).status;
+  assert.notEqual(validateAuditAcl(false, false, 0, 0, ''), 0);
+  assert.notEqual(validateAuditAcl(false, true, 1, 0, 'user:hermes:r--\n'), 0);
+  assert.notEqual(validateAuditAcl(false, true, 0, 1, ''), 0);
+  assert.equal(validateAuditAcl(false, true, 1, 0, 'user::rw-\n'), 0);
+  assert.equal(validateAuditAcl(true, true, 0, 0, 'user:hermes:r--\n'), 0);
+
+  const collisionRoot = await mkdtemp(join(tmpdir(), 'nightdrop-identity-collision-'));
+  const mutationLog = join(collisionRoot, 'mutations');
+  try {
+    const managedMutationLog = join(collisionRoot, 'managed-mutations');
+    const managedUpgrade = spawnSync('/bin/bash', [
+      '-c',
+      [
+        'source "$1"',
+        'validate_agent_identity_snapshot() { return 0; }',
+        'MUTATION_LOG="$2"',
+        'id() { return 0; }',
+        'getent() { return 0; }',
+        'validate_managed_identity_marker() { return 0; }',
+        'validate_managed_identity_records() { return 0; }',
+        'useradd() { printf "useradd\\n" >> "$MUTATION_LOG"; }',
+        'groupadd() { printf "groupadd\\n" >> "$MUTATION_LOG"; }',
+        'usermod() { printf "usermod\\n" >> "$MUTATION_LOG"; }',
+        'prepare_nightdrop_identities'
+      ].join('; '),
+      'installer-managed-upgrade',
+      installerPath,
+      managedMutationLog
+    ], { encoding: 'utf8' });
+    assert.equal(managedUpgrade.status, 0, managedUpgrade.stderr || managedUpgrade.stdout);
+    await assert.rejects(readFile(managedMutationLog), { code: 'ENOENT' });
+
+    const nssFailureMutationLog = join(collisionRoot, 'nss-failure-mutations');
+    const nssFailure = spawnSync('/bin/bash', [
+      '-c',
+      [
+        'source "$1"',
+        'validate_agent_identity_snapshot() { return 0; }',
+        'SERVICE_HOME="$2/nss-home"',
+        'IDENTITY_MARKER_DIR="$2/nss-marker"',
+        'IDENTITY_MARKER="$IDENTITY_MARKER_DIR/managed-identities-v1"',
+        'MUTATION_LOG="$3"',
+        'getent() { return 3; }',
+        'validate_service_home_parent() { return 0; }',
+        'validate_managed_identity_records() { return 0; }',
+        'validate_managed_identity_marker() { return 0; }',
+        'groupadd() { printf "groupadd\\n" >> "$MUTATION_LOG"; }',
+        'useradd() { printf "useradd\\n" >> "$MUTATION_LOG"; }',
+        'usermod() { printf "usermod\\n" >> "$MUTATION_LOG"; }',
+        'chown() { printf "chown\\n" >> "$MUTATION_LOG"; }',
+        'chmod() { printf "chmod\\n" >> "$MUTATION_LOG"; }',
+        'install() { printf "install\\n" >> "$MUTATION_LOG"; }',
+        'if prepare_nightdrop_identities; then exit 90; fi',
+        '[[ ! -e "$MUTATION_LOG" ]]'
+      ].join('; '),
+      'installer-nss-failure',
+      installerPath,
+      collisionRoot,
+      nssFailureMutationLog
+    ], { encoding: 'utf8' });
+    assert.equal(nssFailure.status, 0, nssFailure.stderr || nssFailure.stdout);
+
+    const builderCleanupLog = join(collisionRoot, 'builder-cleanup');
+    const unrelatedBuilderCleanup = spawnSync('/bin/bash', [
+      '-c',
+      [
+        'source "$1"',
+        'validate_agent_identity_snapshot() { return 0; }',
+        'BUILD_USER=nightdrop-build-unrelated',
+        'BUILD_USER_CREATED=false',
+        'BUILD_HOME=""',
+        'BUILD_ROOT=""',
+        'MAILBOX_CLI_TEMP=""',
+        'CLEANUP_LOG="$2"',
+        'id() { return 0; }',
+        'pkill() { printf "pkill\\n" >> "$CLEANUP_LOG"; }',
+        'userdel() { printf "userdel\\n" >> "$CLEANUP_LOG"; }',
+        'cleanup_builder',
+        '[[ ! -e "$CLEANUP_LOG" ]]'
+      ].join('; '),
+      'installer-builder-cleanup',
+      installerPath,
+      builderCleanupLog
+    ], { encoding: 'utf8' });
+    assert.equal(unrelatedBuilderCleanup.status, 0, unrelatedBuilderCleanup.stderr || unrelatedBuilderCleanup.stdout);
+
+    const ownedBuilderCleanup = spawnSync('/bin/bash', [
+      '-c',
+      [
+        'source "$1"',
+        'validate_agent_identity_snapshot() { return 0; }',
+        'BUILD_USER=nightdrop-build-owned',
+        'BUILD_GROUP=nightdrop-build-owned',
+        'BUILD_USER_CREATED=true',
+        'BUILD_GROUP_CREATED=true',
+        'BUILD_IDENTITY_OWNERSHIP_UNCERTAIN=false',
+        'BUILD_UID=12345',
+        'BUILD_GID=12346',
+        'BUILD_USER_PRESENT=true',
+        'BUILD_GROUP_PRESENT=true',
+        'BUILD_HOME=/tmp/nightdrop-build-owned-home',
+        'BUILD_ROOT=""',
+        'MAILBOX_CLI_TEMP=""',
+        'CLEANUP_LOG="$2"',
+        'nss_entry_state() { if [[ "$1" == "passwd" ]]; then [[ "$BUILD_USER_PRESENT" == true ]] && printf "present\\n" || printf "absent\\n"; else [[ "$BUILD_GROUP_PRESENT" == true ]] && printf "present\\n" || printf "absent\\n"; fi; }',
+        'getent() { if [[ "$1" == group ]]; then printf "nightdrop-build-owned:x:12346:\\n"; elif [[ "$BUILD_USER_PRESENT" == true ]]; then printf "nightdrop-build-owned:x:12345:12346::/tmp/nightdrop-build-owned-home:/usr/sbin/nologin\\n"; elif [[ $# -eq 1 ]]; then printf "root:x:0:0:root:/root:/bin/bash\\n"; else return 2; fi; }',
+        'id() { case "$1" in -u) printf "12345\\n" ;; -gn|-Gn) printf "nightdrop-build-owned\\n" ;; *) return 1 ;; esac; }',
+        'pkill() { printf "pkill\\n" >> "$CLEANUP_LOG"; }',
+        'userdel() { printf "userdel\\n" >> "$CLEANUP_LOG"; BUILD_USER_PRESENT=false; }',
+        'groupdel() { printf "groupdel\\n" >> "$CLEANUP_LOG"; BUILD_GROUP_PRESENT=false; }',
+        'cleanup_builder'
+      ].join('; '),
+      'installer-owned-builder-cleanup',
+      installerPath,
+      builderCleanupLog
+    ], { encoding: 'utf8' });
+    assert.equal(ownedBuilderCleanup.status, 0, ownedBuilderCleanup.stderr || ownedBuilderCleanup.stdout);
+    assert.equal(await readFile(builderCleanupLog, 'utf8'), 'pkill\nuserdel\ngroupdel\n');
+
+    const failedBuilderCleanupLog = join(collisionRoot, 'builder-cleanup-failed');
+    const failedBuilderCleanup = spawnSync('/bin/bash', [
+      '-c',
+      [
+        'source "$1"',
+        'BUILD_USER=nightdrop-build-owned',
+        'BUILD_GROUP=nightdrop-build-owned',
+        'BUILD_USER_CREATED=true',
+        'BUILD_GROUP_CREATED=true',
+        'BUILD_IDENTITY_OWNERSHIP_UNCERTAIN=false',
+        'BUILD_UID=12345',
+        'BUILD_GID=12346',
+        'CLEANUP_LOG="$2"',
+        'nss_entry_state() { return 3; }',
+
+        'pkill() { printf "pkill\\n" >> "$CLEANUP_LOG"; }',
+        'userdel() { printf "userdel\\n" >> "$CLEANUP_LOG"; return 1; }',
+        'groupdel() { printf "groupdel\\n" >> "$CLEANUP_LOG"; return 1; }',
+        'if cleanup_builder_identity; then exit 90; fi',
+        '[[ "$BUILD_USER_CREATED" == true && "$BUILD_GROUP_CREATED" == true ]]'
+      ].join('; '),
+      'installer-failed-builder-cleanup',
+      installerPath,
+      failedBuilderCleanupLog
+    ], { encoding: 'utf8' });
+    assert.equal(failedBuilderCleanup.status, 0, failedBuilderCleanup.stderr || failedBuilderCleanup.stdout);
+    await assert.rejects(stat(failedBuilderCleanupLog), { code: 'ENOENT' });
+
+    const unsafeManagedParent = spawnSync('/bin/bash', [
+      '-c',
+      [
+        'source "$1"',
+        'validate_agent_identity_snapshot() { return 0; }',
+        'AGENT_USER=hermes',
+        'login_definition_limit() { printf "1000\\n"; }',
+        'getent() { if [[ "$1" == "passwd" ]]; then printf "nightdrop:x:499:497::/home/nightdrop:/usr/sbin/nologin\\n"; else printf "nightdrop:x:497:\\n"; fi; }',
+        'passwd() { printf "nightdrop L 2026-07-14 0 99999 7 -1\\n"; }',
+        'id() { if [[ "$1" == "-gn" ]]; then printf "hermes\\n"; else printf "nightdrop nightdrop-inbox nightdrop-mailbox\\n"; fi; }',
+        'validate_agent_identity() { return 0; }',
+        'validate_service_identity_record() { return 0; }',
+        'validate_capability_group_record() { return 0; }',
+        'validate_numeric_identity_graph() { return 0; }',
+        'validate_effective_group_graph() { return 0; }',
+        'validate_private_directory() { return 0; }',
+        'validate_service_home_parent() { return 1; }',
+        'if validate_managed_identity_records; then exit 0; else exit 1; fi'
+      ].join('; '),
+      'installer-unsafe-managed-parent',
+      installerPath
+    ], { encoding: 'utf8' });
+    assert.notEqual(unsafeManagedParent.status, 0);
+
+    const freshMutationLog = join(collisionRoot, 'fresh-mutations');
+    const freshHome = join(collisionRoot, 'fresh-home');
+    const freshInstall = spawnSync('/bin/bash', [
+      '-c',
+      [
+        'source "$1"',
+        'validate_agent_identity_snapshot() { return 0; }',
+        'SERVICE_HOME="$2/fresh-home"',
+        'IDENTITY_MARKER_DIR="$2/fresh-marker"',
+        'IDENTITY_MARKER="$IDENTITY_MARKER_DIR/managed-identities-v1"',
+        'MUTATION_LOG="$3"',
+        'id() { return 1; }',
+        'getent() { if [[ $# -eq 1 ]]; then return 0; fi; return 2; }',
+        'validate_service_home_parent() { return 0; }',
+        'validate_managed_identity_records() { return 0; }',
+        'validate_managed_identity_marker() { return 0; }',
+        'groupadd() { printf "groupadd %s\\n" "$*" >> "$MUTATION_LOG"; }',
+        'useradd() { printf "useradd %s\\n" "$*" >> "$MUTATION_LOG"; }',
+        'usermod() { printf "usermod %s\\n" "$*" >> "$MUTATION_LOG"; }',
+        'chown() { printf "chown %s\\n" "$*" >> "$MUTATION_LOG"; }',
+        'chmod() { printf "chmod %s\\n" "$*" >> "$MUTATION_LOG"; }',
+        'install() { local target="${@: -1}"; if [[ "$1" == "-d" ]]; then /usr/bin/mkdir -p "$target"; else : > "$target"; fi; printf "install %s\\n" "$*" >> "$MUTATION_LOG"; }',
+        'prepare_nightdrop_identities'
+      ].join('; '),
+      'installer-fresh-identities',
+      installerPath,
+      collisionRoot,
+      freshMutationLog
+    ], { encoding: 'utf8' });
+    assert.equal(freshInstall.status, 0, freshInstall.stderr || freshInstall.stdout);
+    const freshMutations = await readFile(freshMutationLog, 'utf8');
+    const primaryGroupCreation = freshMutations.indexOf('groupadd --system nightdrop\n');
+    const serviceCreation = freshMutations.indexOf(`useradd -r -m -d ${freshHome} -g nightdrop -s /usr/sbin/nologin nightdrop\n`);
+    const inboxCreation = freshMutations.indexOf('groupadd --system nightdrop-inbox\n');
+    assert(primaryGroupCreation >= 0);
+    assert(serviceCreation > primaryGroupCreation);
+    assert(inboxCreation > serviceCreation);
+
+    for (const failurePoint of [
+      'groupadd:1', 'useradd:1', 'chown:1', 'chmod:1', 'groupadd:2', 'groupadd:3',
+      'usermod:1', 'usermod:2', 'identity-validation', 'install:1', 'install:2',
+      'marker-write', 'marker-validation'
+    ]) {
+      const failureRoot = join(collisionRoot, `failure-${failurePoint.replace(':', '-')}`);
+      const conditionalFailure = spawnSync('/bin/bash', [
+        '-c',
+        [
+          'source "$1"',
+        'validate_agent_identity_snapshot() { return 0; }',
+          'FAIL_AT="$2"',
+          'TEST_ROOT="$3"',
+          'STATE_ROOT="$TEST_ROOT/state"',
+          '/usr/bin/mkdir -p "$STATE_ROOT"',
+          'SERVICE_HOME="$TEST_ROOT/home"',
+          'IDENTITY_MARKER_DIR="$TEST_ROOT/marker"',
+          'IDENTITY_MARKER="$IDENTITY_MARKER_DIR/managed-identities-v1"',
+          'declare -A CALL_COUNTS=()',
+          'step() { local name="$1" count; count=$(( ${CALL_COUNTS[$name]:-0} + 1 )); CALL_COUNTS[$name]="$count"; [[ "$name:$count" != "$FAIL_AT" ]]; }',
+          'getent() { local kind="$1" name="${2:-}"; [[ -n "$name" ]] || return 0; if [[ "$kind" == "passwd" && "$name" == "nightdrop" && -f "$STATE_ROOT/user" ]]; then printf "nightdrop:x:499:497::%s:/usr/sbin/nologin\\n" "$SERVICE_HOME"; return 0; fi; if [[ "$kind" == "group" && -f "$STATE_ROOT/group-$name" ]]; then printf "%s:x:497:\\n" "$name"; return 0; fi; return 2; }',
+          'validate_service_home_parent() { return 0; }',
+          'validate_managed_identity_records() { [[ "$FAIL_AT" != "identity-validation" ]]; }',
+          'validate_managed_identity_marker() { [[ "$FAIL_AT" != "marker-validation" ]]; }',
+          'groupadd() { local name="${@: -1}"; : > "$STATE_ROOT/group-$name"; step groupadd; }',
+          'useradd() { : > "$STATE_ROOT/user"; /usr/bin/mkdir -p "$SERVICE_HOME"; step useradd; }',
+          'usermod() { local groups="$2" user="$3" group; for group in ${groups//,/ }; do : > "$STATE_ROOT/member-$user-$group"; done; step usermod; }',
+          'chown() { step chown; }',
+          'chmod() { step chmod; }',
+          'userdel() { /usr/bin/rm -f "$STATE_ROOT/user" "$STATE_ROOT"/member-nightdrop-*; /usr/bin/rm -rf -- "$SERVICE_HOME"; }',
+          'groupdel() { /usr/bin/rm -f "$STATE_ROOT/group-$1" "$STATE_ROOT"/member-*"-$1"; }',
+          'install() { local target="${@: -1}"; if [[ "$1" == "-d" ]]; then /usr/bin/mkdir -p "$target"; elif [[ "$FAIL_AT" == "marker-write" ]]; then /usr/bin/mkdir -p "$target"; else : > "$target"; fi; step install; }',
+          'if prepare_nightdrop_identities; then exit 80; fi',
+          '[[ ! -e "$STATE_ROOT/user" && ! -e "$SERVICE_HOME" && ! -L "$SERVICE_HOME" ]] || exit 81',
+          '[[ ! -e "$STATE_ROOT/group-nightdrop" && ! -e "$STATE_ROOT/group-nightdrop-inbox" && ! -e "$STATE_ROOT/group-nightdrop-mailbox" ]] || exit 82',
+          'compgen -G "$STATE_ROOT/member-*" >/dev/null && exit 83',
+          '[[ ! -e "$IDENTITY_MARKER_DIR" && ! -L "$IDENTITY_MARKER_DIR" ]] || exit 84',
+          'exit 0'
+        ].join('; '),
+        'installer-conditional-failure',
+        installerPath,
+        failurePoint,
+        failureRoot
+      ], { encoding: 'utf8' });
+      assert.equal(conditionalFailure.status, 0, conditionalFailure.stderr || `residual state at ${failurePoint}`);
+    }
+
+    const privateDirectory = join(collisionRoot, 'private-home');
+    const privateDirectoryLink = join(collisionRoot, 'private-home-link');
+    await mkdir(privateDirectory);
+    await chmod(privateDirectory, 0o700);
+    await symlink(privateDirectory, privateDirectoryLink);
+    const localUser = spawnSync('id', ['-un'], { encoding: 'utf8' }).stdout.trim();
+    const localGroup = spawnSync('id', ['-gn'], { encoding: 'utf8' }).stdout.trim();
+    assert.equal(validate('validate_private_directory', [
+      privateDirectory, localUser, localGroup, '700'
+    ]), 0);
+    assert.notEqual(validate('validate_private_directory', [
+      privateDirectoryLink, localUser, localGroup, '700'
+    ]), 0);
+    await chmod(privateDirectory, 0o750);
+    assert.notEqual(validate('validate_private_directory', [
+      privateDirectory, localUser, localGroup, '700'
+    ]), 0);
+
+    const hostileHome = join(collisionRoot, 'existing-home');
+    await mkdir(hostileHome);
+    const freshCollision = spawnSync('/bin/bash', [
+      '-c',
+      [
+        'source "$1"',
+        'validate_agent_identity_snapshot() { return 0; }',
+        'IDENTITY_MARKER_DIR="$2/marker"',
+        'IDENTITY_MARKER="$IDENTITY_MARKER_DIR/managed-identities-v1"',
+        'SERVICE_HOME="$2/existing-home"',
+        'MUTATION_LOG="$3"',
+        'id() { return 1; }',
+        'getent() { if [[ $# -eq 1 ]]; then return 0; fi; return 2; }',
+        'groupadd() { printf "groupadd\\n" >> "$MUTATION_LOG"; }',
+        'useradd() { printf "useradd\\n" >> "$MUTATION_LOG"; }',
+        'usermod() { printf "usermod\\n" >> "$MUTATION_LOG"; }',
+        'prepare_nightdrop_identities'
+      ].join('; '),
+      'installer-home-collision',
+      installerPath,
+      collisionRoot,
+      mutationLog
+    ], { encoding: 'utf8' });
+    assert.notEqual(freshCollision.status, 0);
+    await assert.rejects(readFile(mutationLog), { code: 'ENOENT' });
+
+    const partialUserCollision = spawnSync('/bin/bash', [
+      '-c',
+      [
+        'source "$1"',
+        'validate_agent_identity_snapshot() { return 0; }',
+        'IDENTITY_MARKER_DIR="$2/partial-marker"',
+        'IDENTITY_MARKER="$IDENTITY_MARKER_DIR/managed-identities-v1"',
+        'MUTATION_LOG="$3"',
+        'getent() { if [[ $# -eq 1 ]]; then return 0; fi; if [[ "$1" == "passwd" && "$2" == "nightdrop" ]]; then printf "nightdrop:x:499:497::/home/nightdrop:/usr/sbin/nologin\\n"; return 0; fi; return 2; }',
+        'groupadd() { printf "groupadd\\n" >> "$MUTATION_LOG"; }',
+        'useradd() { printf "useradd\\n" >> "$MUTATION_LOG"; }',
+        'usermod() { printf "usermod\\n" >> "$MUTATION_LOG"; }',
+        'prepare_nightdrop_identities'
+      ].join('; '),
+      'installer-partial-user-collision',
+      installerPath,
+      collisionRoot,
+      mutationLog
+    ], { encoding: 'utf8' });
+    assert.notEqual(partialUserCollision.status, 0);
+    await assert.rejects(readFile(mutationLog), { code: 'ENOENT' });
+
+    const collision = spawnSync('/bin/bash', [
+      '-c',
+      [
+        'source "$1"',
+        'validate_agent_identity_snapshot() { return 0; }',
+        'IDENTITY_MARKER_DIR="$2/marker"',
+        'IDENTITY_MARKER="$IDENTITY_MARKER_DIR/managed-identities-v1"',
+        'MUTATION_LOG="$3"',
+        'id() { return 0; }',
+        'getent() { if [[ $# -eq 1 ]]; then return 0; fi; printf "%s:x:498:nightdrop,hermes\\n" "$2"; }',
+        'usermod() { printf "mutated\\n" >> "$MUTATION_LOG"; }',
+        'AGENT_USER=hermes',
+        'prepare_nightdrop_identities'
+      ].join('; '),
+      'installer-collision',
+      installerPath,
+      collisionRoot,
+      mutationLog
+    ], { encoding: 'utf8' });
+    assert.notEqual(collision.status, 0);
+    await assert.rejects(readFile(mutationLog), { code: 'ENOENT' });
+  } finally {
+    await rm(collisionRoot, { recursive: true, force: true });
   }
 });
 
@@ -106,9 +638,339 @@ test('production installer retains rollback state until upgraded service is heal
   assert(discardRollback > healthCheck, 'rollback state must survive until after the readiness check');
 });
 
+test('production deployment rollback restores enablement and retains failed recovery state', async () => {
+  const scriptPath = fileURLToPath(new URL('../scripts/install-production.sh', import.meta.url));
+  const root = await mkdtemp(join(tmpdir(), 'nightdrop-deployment-rollback-'));
+  try {
+    const completeRoot = join(root, 'complete');
+    const completeLog = join(root, 'complete.log');
+    await mkdir(completeRoot);
+    const complete = spawnSync('/bin/bash', [
+      '-c',
+      [
+        'source "$1"',
+        'ROLLBACK_ROOT="$2"',
+        'SERVICE_NAME=nightdrop.service',
+        'SERVICE_STOPPED=false',
+        'APP_TREE_SYNCED=false',
+        'UNIT_WRITTEN=false',
+        'CONFIG_TOUCHED=false',
+        'MAILBOX_CLI_TOUCHED=false',
+        'PROTECTED_METADATA_SNAPSHOTTED=false',
+        'UNIT_ENABLEMENT_TOUCHED=true',
+        'SERVICE_ENABLEMENT_STATE=disabled',
+        'SERVICE_WAS_ACTIVE=false',
+        'SYSTEMCTL_STATE=disabled',
+        'SYSTEMCTL_LOG="$3"',
+        'systemctl() { if [[ "$1" == "is-enabled" ]]; then printf "%s\\n" "$SYSTEMCTL_STATE"; return 1; fi; printf "%s\\n" "$*" >> "$SYSTEMCTL_LOG"; if [[ "$1" == "disable" ]]; then SYSTEMCTL_STATE=disabled; fi; }',
+        'cleanup_builder() { return 0; }',
+        'perform_deployment_rollback 1'
+      ].join('; '),
+      'installer-complete-rollback',
+      scriptPath,
+      completeRoot,
+      completeLog
+    ], { encoding: 'utf8' });
+    assert.equal(complete.status, 0, complete.stderr || complete.stdout);
+    await assert.rejects(stat(completeRoot), { code: 'ENOENT' });
+    assert.equal(await readFile(completeLog, 'utf8'), 'disable nightdrop.service\n');
+
+    const failedRoot = join(root, 'failed');
+    const failedApp = join(failedRoot, 'application-tree');
+    await mkdir(failedApp, { recursive: true });
+    const failed = spawnSync('/bin/bash', [
+      '-c',
+      [
+        'source "$1"',
+        'ROLLBACK_ROOT="$2"',
+        'PREVIOUS_APP_TREE="$3"',
+        'SERVICE_NAME=nightdrop.service',
+        'READY_FILE=/run/nightdrop/ready',
+        'SERVICE_STOPPED=true',
+        'APP_TREE_SYNCED=true',
+        'UNIT_WRITTEN=false',
+        'CONFIG_TOUCHED=false',
+        'MAILBOX_CLI_TOUCHED=false',
+        'PROTECTED_METADATA_SNAPSHOTTED=false',
+        'UNIT_ENABLEMENT_TOUCHED=false',
+        'SERVICE_WAS_ACTIVE=true',
+        'systemctl() { return 0; }',
+        'restore_application_tree() { return 1; }',
+        'wait_for_service_ready() { return 0; }',
+        'cleanup_builder() { return 0; }',
+        'if perform_deployment_rollback 1; then exit 90; fi'
+      ].join('; '),
+      'installer-failed-rollback',
+      scriptPath,
+      failedRoot,
+      failedApp
+    ], { encoding: 'utf8' });
+    assert.equal(failed.status, 0, failed.stderr || failed.stdout);
+    assert.match(failed.stderr, /rollback was incomplete/);
+    assert.equal((await stat(failedRoot)).isDirectory(), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('failed service stop still triggers prior-service rollback and restart', async () => {
+  const installerPath = fileURLToPath(new URL('../scripts/install-production.sh', import.meta.url));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-stop-rollback-'));
+  try {
+    const rollbackRoot = join(dir, 'rollback');
+    const logPath = join(dir, 'systemctl.log');
+    await mkdir(rollbackRoot);
+    const result = spawnSync('/bin/bash', [
+      '-c',
+      [
+        'source "$1"',
+        'ROLLBACK_ROOT="$2"',
+        'SYSTEMCTL_LOG="$3"',
+        'SERVICE_NAME=nightdrop.service',
+        'READY_FILE=/run/nightdrop/ready',
+        'SERVICE_WAS_ACTIVE=true',
+        'SERVICE_STOPPED=false',
+        'APP_TREE_SYNCED=false',
+        'UNIT_WRITTEN=false',
+        'CONFIG_TOUCHED=false',
+        'MAILBOX_CLI_TOUCHED=false',
+        'PROTECTED_METADATA_SNAPSHOTTED=false',
+        'UNIT_ENABLEMENT_TOUCHED=false',
+        'STOP_CALLS=0',
+        'systemctl() { printf "%s\\n" "$*" >> "$SYSTEMCTL_LOG"; if [[ "$1" == stop ]]; then STOP_CALLS=$((STOP_CALLS + 1)); (( STOP_CALLS > 1 )); else return 0; fi; }',
+        'wait_for_service_ready() { return 0; }',
+        'cleanup_builder() { return 0; }',
+        'if stop_previous_service; then exit 90; fi',
+        '[[ "$SERVICE_STOPPED" == true ]]',
+        'perform_deployment_rollback 1'
+      ].join('; '),
+      'installer-stop-rollback',
+      installerPath,
+      rollbackRoot,
+      logPath
+    ], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(await readFile(logPath, 'utf8'), [
+      'stop nightdrop.service',
+      'stop nightdrop.service',
+      'start nightdrop.service',
+      ''
+    ].join('\n'));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('partial transient useradd failure cleans the proven user and group', async () => {
+  const installerPath = fileURLToPath(new URL('../scripts/install-production.sh', import.meta.url));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-builder-partial-'));
+  try {
+    const logPath = join(dir, 'cleanup.log');
+    const result = spawnSync('/bin/bash', [
+      '-c',
+      [
+        'source "$1"',
+        'BUILD_USER=nightdrop-build-test',
+        'BUILD_GROUP="$BUILD_USER"',
+        'BUILD_HOME=/tmp/nightdrop-build-test-home',
+        'BUILD_USER_CREATED=false',
+        'BUILD_GROUP_CREATED=false',
+        'BUILD_IDENTITY_OWNERSHIP_UNCERTAIN=false',
+        'BUILD_UID=""',
+        'BUILD_GID=""',
+        'USER_STATE=absent',
+        'GROUP_STATE=absent',
+        'CLEANUP_LOG="$2"',
+        'nss_entry_state() { if [[ "$1" == passwd ]]; then printf "%s\\n" "$USER_STATE"; else printf "%s\\n" "$GROUP_STATE"; fi; }',
+        'getent() { if [[ "$1" == group ]]; then printf "nightdrop-build-test:x:4343:\\n"; elif [[ "$USER_STATE" == present ]]; then printf "nightdrop-build-test:x:4242:4343::/tmp/nightdrop-build-test-home:/usr/sbin/nologin\\n"; elif [[ $# -eq 1 ]]; then printf "root:x:0:0:root:/root:/bin/bash\\n"; else return 2; fi; }',
+        'id() { case "$1" in -u) printf "4242\\n" ;; -gn|-Gn) printf "nightdrop-build-test\\n" ;; *) return 1 ;; esac; }',
+        'groupadd() { GROUP_STATE=present; return 0; }',
+        'useradd() { USER_STATE=present; return 1; }',
+        'pkill() { printf "pkill %s\\n" "$*" >> "$CLEANUP_LOG"; }',
+        'userdel() { printf "userdel %s\\n" "$*" >> "$CLEANUP_LOG"; USER_STATE=absent; }',
+        'groupdel() { printf "groupdel %s\\n" "$*" >> "$CLEANUP_LOG"; GROUP_STATE=absent; }',
+        'if create_builder_identity; then exit 90; fi',
+        '[[ "$BUILD_USER_CREATED" == true && "$BUILD_GROUP_CREATED" == true && "$BUILD_UID" == 4242 && "$BUILD_GID" == 4343 ]]',
+        'cleanup_builder_identity'
+      ].join('; '),
+      'installer-builder-partial',
+      installerPath,
+      logPath
+    ], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const cleanup = await readFile(logPath, 'utf8');
+    assert.match(cleanup, /pkill -KILL -u 4242/);
+    assert.match(cleanup, /userdel nightdrop-build-test/);
+    assert.match(cleanup, /groupdel nightdrop-build-test/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('partial transient groupadd failure cleans only the proven group', async () => {
+  const installerPath = fileURLToPath(new URL('../scripts/install-production.sh', import.meta.url));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-builder-group-partial-'));
+  try {
+    const logPath = join(dir, 'cleanup.log');
+    const result = spawnSync('/bin/bash', [
+      '-c',
+      [
+        'source "$1"',
+        'BUILD_USER=nightdrop-build-test',
+        'BUILD_GROUP="$BUILD_USER"',
+        'BUILD_HOME=/tmp/nightdrop-build-test-home',
+        'BUILD_USER_CREATED=false',
+        'BUILD_GROUP_CREATED=false',
+        'BUILD_IDENTITY_OWNERSHIP_UNCERTAIN=false',
+        'BUILD_UID=""',
+        'BUILD_GID=""',
+        'GROUP_STATE=absent',
+        'CLEANUP_LOG="$2"',
+        'nss_entry_state() { if [[ "$1" == group ]]; then printf "%s\\n" "$GROUP_STATE"; else printf "absent\\n"; fi; }',
+        'getent() { if [[ "$1" == group ]]; then printf "nightdrop-build-test:x:4343:\\n"; else printf "root:x:0:0:root:/root:/bin/bash\\n"; fi; }',
+        'groupadd() { GROUP_STATE=present; return 1; }',
+        'groupdel() { printf "groupdel %s\\n" "$*" >> "$CLEANUP_LOG"; GROUP_STATE=absent; }',
+        'userdel() { printf "userdel %s\\n" "$*" >> "$CLEANUP_LOG"; }',
+        'pkill() { printf "pkill %s\\n" "$*" >> "$CLEANUP_LOG"; }',
+        'if create_builder_identity; then exit 90; fi',
+        '[[ "$BUILD_USER_CREATED" == false && "$BUILD_GROUP_CREATED" == true && "$BUILD_GID" == 4343 ]]',
+        'cleanup_builder_identity'
+      ].join('; '),
+      'installer-builder-group-partial',
+      installerPath,
+      logPath
+    ], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(await readFile(logPath, 'utf8'), 'groupdel nightdrop-build-test\n');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('transient ownership mismatch or NSS uncertainty forbids user deletion', async () => {
+  const installerPath = fileURLToPath(new URL('../scripts/install-production.sh', import.meta.url));
+  for (const scenario of ['mismatch', 'nss-error']) {
+    const dir = await mkdtemp(join(tmpdir(), `nightdrop-builder-${scenario}-`));
+    try {
+      const logPath = join(dir, 'cleanup.log');
+      const result = spawnSync('/bin/bash', [
+        '-c',
+        [
+          'source "$1"',
+          'SCENARIO="$2"',
+          'CLEANUP_LOG="$3"',
+          'BUILD_USER=nightdrop-build-test',
+          'BUILD_GROUP="$BUILD_USER"',
+          'BUILD_HOME=/tmp/nightdrop-build-test-home',
+          'BUILD_USER_CREATED=false',
+          'BUILD_GROUP_CREATED=false',
+          'BUILD_IDENTITY_OWNERSHIP_UNCERTAIN=false',
+          'BUILD_UID=""',
+          'BUILD_GID=""',
+          'USER_STATE=absent',
+          'GROUP_STATE=absent',
+          'nss_entry_state() { if [[ "$1" == passwd && "$SCENARIO" == nss-error && "$USER_STATE" == present ]]; then return 3; fi; if [[ "$1" == passwd ]]; then printf "%s\\n" "$USER_STATE"; else printf "%s\\n" "$GROUP_STATE"; fi; }',
+          'getent() { if [[ "$1" == group ]]; then printf "nightdrop-build-test:x:4343:\\n"; elif [[ "$USER_STATE" == present ]]; then printf "nightdrop-build-test:x:4242:4343::/tmp/nightdrop-build-test-home:/bin/bash\\n"; elif [[ $# -eq 1 ]]; then printf "root:x:0:0:root:/root:/bin/bash\\n"; else return 2; fi; }',
+          'id() { case "$1" in -u) printf "4242\\n" ;; -gn|-Gn) printf "nightdrop-build-test\\n" ;; *) return 1 ;; esac; }',
+          'groupadd() { GROUP_STATE=present; }',
+          'useradd() { USER_STATE=present; return 1; }',
+          'pkill() { printf "pkill %s\\n" "$*" >> "$CLEANUP_LOG"; }',
+          'userdel() { printf "userdel %s\\n" "$*" >> "$CLEANUP_LOG"; USER_STATE=absent; }',
+          'groupdel() { printf "groupdel %s\\n" "$*" >> "$CLEANUP_LOG"; GROUP_STATE=absent; }',
+          'if create_builder_identity; then exit 90; fi',
+          '[[ "$BUILD_IDENTITY_OWNERSHIP_UNCERTAIN" == true && "$BUILD_USER_CREATED" == false ]]',
+          'if cleanup_builder_identity; then exit 91; fi'
+        ].join('; '),
+        'installer-builder-refusal',
+        installerPath,
+        scenario,
+        logPath
+      ], { encoding: 'utf8' });
+      assert.equal(result.status, 0, `${scenario}: ${result.stderr || result.stdout}`);
+      await assert.rejects(stat(logPath), { code: 'ENOENT' });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test('mailbox rollback verification detects byte and metadata drift', async () => {
+  const installerPath = fileURLToPath(new URL('../scripts/install-production.sh', import.meta.url));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-mailbox-metadata-'));
+  try {
+    const sourceDir = join(dir, 'source');
+    const destinationDir = join(dir, 'destination');
+    await mkdir(sourceDir);
+    await mkdir(destinationDir);
+    const source = join(sourceDir, 'nightdrop-mailbox');
+    const destination = join(destinationDir, 'nightdrop-mailbox');
+    await writeFile(source, 'trusted mailbox bytes\n', { mode: 0o640 });
+    const copied = spawnSync('/bin/cp', ['-a', source, destination], { encoding: 'utf8' });
+    assert.equal(copied.status, 0, copied.stderr);
+    const verify = (path: string): number | null => spawnSync('/bin/bash', [
+      '-c', 'source "$1"; verify_restored_file "$2" "$3"',
+      'installer-mailbox-metadata', installerPath, source, path
+    ], { encoding: 'utf8' }).status;
+    assert.equal(verify(destination), 0);
+    await chmod(destination, 0o600);
+    assert.notEqual(verify(destination), 0);
+    const restored = spawnSync('/bin/cp', ['-a', source, destination], { encoding: 'utf8' });
+    assert.equal(restored.status, 0, restored.stderr);
+    await writeFile(destination, 'tampered mailbox data\n');
+    await chmod(destination, 0o640);
+    const sourceMetadata = await stat(source);
+    await utimes(destination, sourceMetadata.atime, sourceMetadata.mtime);
+    assert.equal((await stat(destination)).size, sourceMetadata.size);
+    assert.notEqual(verify(destination), 0);
+    const installer = await readFile(installerPath, 'utf8');
+    assert.match(installer, /rsync -aAXnc --numeric-ids --itemize-changes/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('failed mailbox metadata verification retains rollback recovery state', async () => {
+  const installerPath = fileURLToPath(new URL('../scripts/install-production.sh', import.meta.url));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-mailbox-rollback-'));
+  try {
+    const rollbackRoot = join(dir, 'rollback');
+    const previous = join(rollbackRoot, 'nightdrop-mailbox');
+    const destination = join(dir, 'nightdrop-mailbox');
+    await mkdir(rollbackRoot);
+    await writeFile(previous, 'previous\n');
+    await writeFile(destination, 'candidate\n');
+    const result = spawnSync('/bin/bash', [
+      '-c',
+      [
+        'source "$1"',
+        'ROLLBACK_ROOT="$2"',
+        'PREVIOUS_MAILBOX_CLI="$3"',
+        'MAILBOX_CLI_PATH="$4"',
+        'MAILBOX_CLI_TOUCHED=true',
+        'MAILBOX_CLI_EXISTED=true',
+        'SERVICE_STOPPED=false',
+        'APP_TREE_SYNCED=false',
+        'UNIT_WRITTEN=false',
+        'CONFIG_TOUCHED=false',
+        'PROTECTED_METADATA_SNAPSHOTTED=false',
+        'UNIT_ENABLEMENT_TOUCHED=false',
+        'SERVICE_WAS_ACTIVE=false',
+        'verify_restored_file() { return 1; }',
+        'cleanup_builder() { return 0; }',
+        'if perform_deployment_rollback 1; then exit 90; fi'
+      ].join('; '),
+      'installer-mailbox-rollback', installerPath, rollbackRoot, previous, destination
+    ], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    await stat(rollbackRoot);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('production installer rsync preserves rollback snapshots', async () => {
   const scriptPath = fileURLToPath(new URL('../scripts/install-production.sh', import.meta.url));
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-rsync-rollback-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-rsync-rollback-'));
   const source = join(dir, 'source');
   const install = join(dir, 'install');
   const rollbackFile = join(install, '.rollback-12345678', 'config.yaml');
@@ -743,7 +1605,7 @@ test('OAuth callback does not expose provider error descriptions', async () => {
 });
 
 test('pass secret store sends the secret through stdin and never command arguments', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-pass-test-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-pass-test-'));
   try {
     const executable = join(dir, 'fake-pass');
     const argsPath = join(dir, 'args.txt');
@@ -756,10 +1618,10 @@ test('pass secret store sends the secret through stdin and never command argumen
       executable,
       env: { ...process.env, FAKE_PASS_ARGS: argsPath, FAKE_PASS_STDIN: stdinPath }
     });
-    await store.set('agent-gate/google-refresh-token', secret);
+    await store.set('nightdrop/google-refresh-token', secret);
 
     const args = await readFile(argsPath, 'utf8');
-    assert.equal(args, 'insert\n--force\n--multiline\nagent-gate/google-refresh-token\n');
+    assert.equal(args, 'insert\n--force\n--multiline\nnightdrop/google-refresh-token\n');
     assert.doesNotMatch(args, /refresh-token-value/);
     assert.equal(await readFile(stdinPath, 'utf8'), `${secret}\n`);
   } finally {
@@ -768,7 +1630,7 @@ test('pass secret store sends the secret through stdin and never command argumen
 });
 
 test('pass secret store uses the pinned environment executable instead of PATH', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-pass-pinned-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-pass-pinned-'));
   try {
     const pathDir = join(dir, 'path');
     await mkdir(pathDir);
@@ -790,17 +1652,17 @@ test('pass secret store uses the pinned environment executable instead of PATH',
 
     const store = new PassSecretStore({
       env: {
-        AGENT_GATE_PASS_BIN: pinnedExecutable,
+        NIGHTDROP_PASS_BIN: pinnedExecutable,
         PATH: pathDir,
         FAKE_PASS_SELECTION: markerPath
       }
     });
-    await store.set('agent-gate/outlook-refresh-token', 'rotation-value');
+    await store.set('nightdrop/outlook-refresh-token', 'rotation-value');
     assert.equal(await readFile(markerPath, 'utf8'), 'pinned');
 
     assert.throws(() => new PassSecretStore({ executable: 'pass' }), /must be absolute/);
     assert.throws(
-      () => new PassSecretStore({ env: { AGENT_GATE_PASS_BIN: 'pass' } }),
+      () => new PassSecretStore({ env: { NIGHTDROP_PASS_BIN: 'pass' } }),
       /must be absolute/
     );
   } finally {
@@ -811,13 +1673,13 @@ test('pass secret store uses the pinned environment executable instead of PATH',
 test('pass secret store rejects terminal-control characters before spawning', async () => {
   const store = new PassSecretStore({ executable: '/bin/false' });
   await assert.rejects(
-    () => store.set('agent-gate/test-secret', 'secret\u202Evalue'),
+    () => store.set('nightdrop/test-secret', 'secret\u202Evalue'),
     /printable single-line/
   );
 });
 
 test('pass secret store times out a hung password-store process', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-pass-timeout-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-pass-timeout-'));
   try {
     const executable = join(dir, 'hung-pass');
     await writeFile(executable, '#!/bin/sh\nsleep 30\n', 'utf8');
@@ -825,7 +1687,7 @@ test('pass secret store times out a hung password-store process', async () => {
     const store = new PassSecretStore({ executable, env: process.env, timeoutMs: 50 });
 
     await assert.rejects(
-      () => store.set('agent-gate/google-refresh-token', 'temporary-test-token'),
+      () => store.set('nightdrop/google-refresh-token', 'temporary-test-token'),
       /timed out/
     );
   } finally {
@@ -833,23 +1695,32 @@ test('pass secret store times out a hung password-store process', async () => {
   }
 });
 
-test('production OAuth wrapper is root-protected and starts agentgate with a clean environment', async () => {
+test('production OAuth wrapper is root-protected and starts Nightdrop with a clean environment', async () => {
   const wrapper = await readFile(new URL('../scripts/oauth-setup.sh', import.meta.url), 'utf8');
   const manualHelper = await readFile(new URL('../scripts/configure-provider-secrets.sh', import.meta.url), 'utf8');
   const installer = await readFile(new URL('../scripts/install-production.sh', import.meta.url), 'utf8');
   const oauthCli = await readFile(new URL('../src/oauth-setup.ts', import.meta.url), 'utf8');
 
-  assert.match(wrapper, /runuser -u "\$SERVICE_USER" -- env -i/);
+  assert.match(wrapper, /"\$RUNUSER_BIN" -u "\$SERVICE_USER" -- "\$ENV_BIN" -i/);
   assert.match(wrapper, /readonly TRUSTED_PATH=/);
+  assert.match(wrapper, /validate_trusted_path/);
+  assert.match(wrapper, /resolve_trusted_executable id/);
+  assert.match(wrapper, /\[\[ "\$current" == "\/" \]\] && break/);
   assert.match(wrapper, /resolve_trusted_executable node/);
+  assert.match(wrapper, /resolve_trusted_executable runuser/);
+  assert.match(wrapper, /resolve_trusted_executable env/);
+  assert.match(wrapper, /resolve_trusted_executable pass/);
+  assert.match(wrapper, /NIGHTDROP_PASS_BIN="\$PASS_BIN"/);
+  assert.match(wrapper, /resolve_trusted_executable systemctl/);
+  assert.match(wrapper, /resolve_trusted_executable sleep/);
   assert.match(wrapper, /healthy_checks=/);
-  assert.match(wrapper, /systemctl is-active --quiet "\$SERVICE_NAME"/);
+  assert.match(wrapper, /"\$SYSTEMCTL_BIN" is-active --quiet "\$SERVICE_NAME"/);
   assert.match(wrapper, /CONFIG_PATH="\$INSTALL_DIR\/config\/config\.yaml"/);
-  assert.doesNotMatch(wrapper, /AGENT_GATE_CONFIG:-/);
+  assert.doesNotMatch(wrapper, /NIGHTDROP_CONFIG:-/);
   assert.match(installer, /SOURCE_DIR=.*BASH_SOURCE/);
   assert.match(installer, /"\$SOURCE_DIR"\/ "\$INSTALL_DIR"\//);
   assert.match(installer, /Refusing symbolic link at protected install path/);
-  assert.match(installer, /local ownership="\$\{1:-root:root\}"/);
+  assert.match(installer, /local ownership="root:root"/);
   assert.match(installer, /rsync -a --delete --chown="\$ownership"/);
   assert.match(installer, /\nsync_application_tree\n/);
   assert.doesNotMatch(installer, /chown -R root:root "\$INSTALL_DIR"/);
@@ -858,24 +1729,31 @@ test('production OAuth wrapper is root-protected and starts agentgate with a cle
   assert.match(installer, /chmod 755 "\$INSTALL_DIR\/scripts"/);
   assert.match(installer, /chown root:root[\s\\]+"\$INSTALL_DIR\/scripts\/oauth-setup\.sh"/);
   assert.match(installer, /chown -R "\$SERVICE_USER:\$SERVICE_GROUP" "\$CONFIG_DIR"/);
-  assert.match(installer, /Environment=AGENT_GATE_CONFIG=\$CONFIG_DIR\/config\.yaml/);
-  assert.match(installer, /BUILD_USER="agentgate-build-\$\$"/);
+  assert.match(installer, /Environment=NIGHTDROP_CONFIG=\$CONFIG_DIR\/config\.yaml/);
+  assert.match(installer, /BUILD_USER="nightdrop-build-\$\$"/);
+  assert.match(installer, /"\$ENV_BIN" -i[\s\S]*?"\$NPM_BIN" ci/);
   assert.match(installer, /runuser -u "\$BUILD_USER" -- env -i/);
   assert.doesNotMatch(installer, /runuser -u "\$SERVICE_USER" -- env -i[\s\S]*?npm/);
   assert.match(installer, /find "\$BUILD_ROOT\/dist" -type l -print -quit/);
   assert.doesNotMatch(installer, /chown -R "\$SERVICE_USER:\$SERVICE_GROUP" "\$INSTALL_DIR"/);
   assert.match(manualHelper, /if \[\[ ! -t 0 \|\| ! -t 1 \]\]/);
   assert.match(manualHelper, /resolve_trusted_executable pass/);
+  assert.match(manualHelper, /resolve_trusted_executable id/);
+  assert.match(manualHelper, /\[\[ "\$current" == "\/" \]\] && break/);
+  assert.match(manualHelper, /resolve_trusted_executable timeout/);
+  assert.match(manualHelper, /resolve_trusted_executable runuser/);
+  assert.match(manualHelper, /resolve_trusted_executable env/);
+  assert.match(manualHelper, /"\$TIMEOUT_BIN" --kill-after=5s 30s "\$RUNUSER_BIN"/);
   assert.match(manualHelper, /"\$PASS_BIN" insert --force --multiline/);
 });
 
 test('provider config update is atomic, contains pass references, and remains mode 0600', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-oauth-config-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-oauth-config-'));
   try {
     const configPath = join(dir, 'config.yaml');
     await writeFile(configPath, `
 telegram:
-  botToken: "\${PASS:agent-gate/telegram-bot-token}"
+  botToken: "\${PASS:nightdrop/telegram-bot-token}"
   allowedUsers: [2061243435]
 watch:
   directory: ./drafts/inbox
@@ -892,13 +1770,13 @@ audit:
 
     await updateProviderConfig(configPath, 'gmail', {
       type: 'email-gmail',
-      clientId: '${PASS:agent-gate/google-client-id}',
-      refreshToken: '${PASS:agent-gate/google-refresh-token}',
+      clientId: '${PASS:nightdrop/google-client-id}',
+      refreshToken: '${PASS:nightdrop/google-refresh-token}',
       fromAddress: 'owner@gmail.com'
     }, true);
 
     const parsed = YAML.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
-    assert.equal(parsed.providers.gmail.refreshToken, '${PASS:agent-gate/google-refresh-token}');
+    assert.equal(parsed.providers.gmail.refreshToken, '${PASS:nightdrop/google-refresh-token}');
     assert.equal(parsed.providers.gmail.fromAddress, 'owner@gmail.com');
     assert.equal(parsed.defaults.provider, 'gmail');
     assert.equal((await lstat(configPath)).mode & 0o777, 0o600);
@@ -908,7 +1786,7 @@ audit:
 });
 
 test('provider config writer rejects group/world-readable targets', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-oauth-mode-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-oauth-mode-'));
   try {
     const configPath = join(dir, 'config.yaml');
     await writeFile(configPath, 'providers: {}\ndefaults: {}\n', { mode: 0o644 });
@@ -927,7 +1805,7 @@ test('provider config writer rejects group/world-readable targets', async () => 
 });
 
 test('OAuth persistence validates private config before writing any secret', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-oauth-preflight-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-oauth-preflight-'));
   try {
     const configPath = join(dir, 'config.yaml');
     await writeFile(configPath, 'providers: {}\ndefaults: {}\n', { mode: 0o644 });
@@ -949,14 +1827,14 @@ test('OAuth persistence validates private config before writing any secret', asy
 });
 
 test('OAuth persistence never overwrites live credentials before the config commit succeeds', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-oauth-rollback-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-oauth-rollback-'));
   try {
     const configPath = join(dir, 'config.yaml');
     const originalConfig = 'providers: {}\ndefaults:\n  provider: log\n';
     await writeFile(configPath, originalConfig, { encoding: 'utf8', mode: 0o600 });
     const stored = new Map<string, string>([
-      ['agent-gate/google-client-id', 'existing-client-id'],
-      ['agent-gate/google-refresh-token', 'existing-refresh-token']
+      ['nightdrop/google-client-id', 'existing-client-id'],
+      ['nightdrop/google-refresh-token', 'existing-refresh-token']
     ]);
     let writes = 0;
     const store = {
@@ -976,8 +1854,8 @@ test('OAuth persistence never overwrites live credentials before the config comm
       setAsDefault: true
     }), /mode 0600/);
 
-    assert.equal(stored.get('agent-gate/google-client-id'), 'existing-client-id');
-    assert.equal(stored.get('agent-gate/google-refresh-token'), 'existing-refresh-token');
+    assert.equal(stored.get('nightdrop/google-client-id'), 'existing-client-id');
+    assert.equal(stored.get('nightdrop/google-refresh-token'), 'existing-refresh-token');
     assert.equal(await readFile(configPath, 'utf8'), originalConfig);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -985,7 +1863,7 @@ test('OAuth persistence never overwrites live credentials before the config comm
 });
 
 test('OAuth persistence rejects concurrent onboarding for the same config', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-oauth-lock-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-oauth-lock-'));
   let releaseFirstWrite!: () => void;
   let signalFirstWrite!: () => void;
   let first: Promise<void> | undefined;
@@ -1028,7 +1906,7 @@ test('OAuth persistence rejects concurrent onboarding for the same config', asyn
 });
 
 test('Gmail persistence stores no temporary access token and writes only pass references', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-gmail-persist-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-gmail-persist-'));
   try {
     const configPath = join(dir, 'config.yaml');
     await writeFile(configPath, 'providers: {}\ndefaults:\n  provider: log\n', { encoding: 'utf8', mode: 0o600 });
@@ -1049,9 +1927,9 @@ test('Gmail persistence stores no temporary access token and writes only pass re
     const suffix = assertVersionedCredentialKeys(keys, ['google-client-id', 'google-refresh-token']);
     assert(![...stored.values()].includes('temporary-access-token'));
     const parsed = YAML.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
-    assert.equal(parsed.providers.gmail.clientId, `\${PASS:agent-gate/google-client-id-${suffix}}`);
+    assert.equal(parsed.providers.gmail.clientId, `\${PASS:nightdrop/google-client-id-${suffix}}`);
     assert.equal(parsed.providers.gmail.clientSecret, undefined);
-    assert.equal(parsed.providers.gmail.refreshToken, `\${PASS:agent-gate/google-refresh-token-${suffix}}`);
+    assert.equal(parsed.providers.gmail.refreshToken, `\${PASS:nightdrop/google-refresh-token-${suffix}}`);
     assert.equal(parsed.providers.gmail.fromAddress, 'owner@gmail.com');
     assert.equal(parsed.defaults.provider, 'log');
   } finally {
@@ -1060,7 +1938,7 @@ test('Gmail persistence stores no temporary access token and writes only pass re
 });
 
 test('Outlook persistence stores a public-client refresh token without a client secret', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-outlook-persist-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-outlook-persist-'));
   try {
     const configPath = join(dir, 'config.yaml');
     await writeFile(configPath, 'providers: {}\ndefaults:\n  provider: log\n', { encoding: 'utf8', mode: 0o600 });
@@ -1081,10 +1959,10 @@ test('Outlook persistence stores a public-client refresh token without a client 
     const keys = [...stored.keys()].sort();
     const suffix = assertVersionedCredentialKeys(keys, ['microsoft-client-id', 'microsoft-refresh-token']);
     const parsed = YAML.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
-    assert.equal(parsed.providers.outlook.clientId, `\${PASS:agent-gate/microsoft-client-id-${suffix}}`);
+    assert.equal(parsed.providers.outlook.clientId, `\${PASS:nightdrop/microsoft-client-id-${suffix}}`);
     assert.equal(parsed.providers.outlook.clientSecret, undefined);
-    assert.equal(parsed.providers.outlook.refreshToken, `\${PASS:agent-gate/microsoft-refresh-token-${suffix}}`);
-    assert.equal(parsed.providers.outlook.refreshTokenKey, `agent-gate/microsoft-refresh-token-${suffix}`);
+    assert.equal(parsed.providers.outlook.refreshToken, `\${PASS:nightdrop/microsoft-refresh-token-${suffix}}`);
+    assert.equal(parsed.providers.outlook.refreshTokenKey, `nightdrop/microsoft-refresh-token-${suffix}`);
     assert.equal(parsed.providers.outlook.tenantId, 'common');
     assert.equal(parsed.providers.outlook.fromAddress, 'owner@outlook.com');
     assert.equal(parsed.defaults.provider, 'outlook');
@@ -1094,7 +1972,7 @@ test('Outlook persistence stores a public-client refresh token without a client 
 });
 
 test('Outlook mailbox persistence writes a named provider and profile with mailbox access', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-outlook-profile-persist-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-outlook-profile-persist-'));
   try {
     const configPath = join(dir, 'config.yaml');
     await writeFile(configPath, 'providers: {}\ndefaults:\n  provider: log\n', { encoding: 'utf8', mode: 0o600 });
@@ -1120,7 +1998,7 @@ test('Outlook mailbox persistence writes a named provider and profile with mailb
 });
 
 test('Zoho persistence stores credentials and pins the provider region', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-zoho-persist-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-zoho-persist-'));
   try {
     const configPath = join(dir, 'config.yaml');
     await writeFile(configPath, 'providers: {}\ndefaults:\n  provider: log\n', { encoding: 'utf8', mode: 0o600 });
@@ -1143,9 +2021,9 @@ test('Zoho persistence stores credentials and pins the provider region', async (
     const keys = [...stored.keys()].sort();
     const suffix = assertVersionedCredentialKeys(keys, ['zoho-client-id', 'zoho-client-secret', 'zoho-refresh-token']);
     const parsed = YAML.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
-    assert.equal(parsed.providers.zoho.clientId, `\${PASS:agent-gate/zoho-client-id-${suffix}}`);
-    assert.equal(parsed.providers.zoho.clientSecret, `\${PASS:agent-gate/zoho-client-secret-${suffix}}`);
-    assert.equal(parsed.providers.zoho.refreshToken, `\${PASS:agent-gate/zoho-refresh-token-${suffix}}`);
+    assert.equal(parsed.providers.zoho.clientId, `\${PASS:nightdrop/zoho-client-id-${suffix}}`);
+    assert.equal(parsed.providers.zoho.clientSecret, `\${PASS:nightdrop/zoho-client-secret-${suffix}}`);
+    assert.equal(parsed.providers.zoho.refreshToken, `\${PASS:nightdrop/zoho-refresh-token-${suffix}}`);
     assert.equal(parsed.providers.zoho.region, 'eu');
     assert.equal(parsed.providers.zoho.accountId, '123456789');
     assert.equal(parsed.providers.zoho.fromAddress, 'owner@example.eu');

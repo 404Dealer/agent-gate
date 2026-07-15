@@ -1,9 +1,9 @@
-# agent-gate
+# Nightdrop
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-22%2B-green.svg)](https://nodejs.org/)
-[![CI](https://github.com/404Dealer/agent-gate/actions/workflows/ci.yml/badge.svg)](https://github.com/404Dealer/agent-gate/actions/workflows/ci.yml)
+[![CI](https://github.com/404Dealer/nightdrop/actions/workflows/ci.yml/badge.svg)](https://github.com/404Dealer/nightdrop/actions/workflows/ci.yml)
 
 Credential-isolated approval layer between AI agents and external actions, with bounded multi-account Gmail/Outlook triage and Telegram-approved send, Trash, and unsubscribe operations.
 
@@ -17,7 +17,7 @@ AI agents with email and API access are a prompt injection timebomb. Current mit
 - **"Restrict the agent's tools"** — if it can draft AND confirm, it can still send anything.
 - **"Remove access entirely"** — then what's the point of having an agent?
 
-When deployed with the isolation requirements below, agent-gate enforces a **structural** control plane that prompt injection alone cannot bypass.
+When deployed with the isolation requirements below, Nightdrop enforces a **structural** control plane that prompt injection alone cannot bypass.
 
 ## How It Works
 
@@ -31,48 +31,48 @@ When deployed with the isolation requirements below, agent-gate enforces a **str
 ```
 
 1. Your agent writes a JSON draft file to an inbox directory.
-2. agent-gate picks it up and sends a preview to your Telegram.
+2. Nightdrop picks it up and sends a preview to your Telegram.
 3. You tap **Approve** or **Deny**.
 4. If approved, a deterministic script executes exactly what you reviewed — no AI involved.
 
 ## Requirements for the Security Model to Hold
 
-agent-gate is only a **hard security boundary** when these requirements are true:
+Nightdrop is only a **hard security boundary** when these requirements are true:
 
 | Requirement | Why it matters |
 |-------------|----------------|
-| agent-gate runs as a separate OS user | Prevents the AI agent process from reading/modifying pending or approved drafts |
+| Nightdrop runs as a separate OS user | Prevents the AI agent process from reading/modifying pending or approved drafts |
 | The agent has write-only access to the inbox | The agent can propose drafts but cannot list, read, edit, delete, or replace drafts after submission |
-| Send credentials live only in agent-gate | If the agent also has SMTP, Gmail, Outlook, or Zoho send credentials, it can bypass the gate |
+| Send credentials live only in Nightdrop | If the agent also has SMTP, Gmail, Outlook, or Zoho send credentials, it can bypass the gate |
 | The approval bot token is not available to the agent | Prevents the agent from approving its own drafts |
 | Gmail/Outlook mailbox access is exposed only through the bounded Unix-socket broker | Keeps Gmail App Passwords, Outlook OAuth tokens, arbitrary IMAP commands, and unrestricted Graph calls outside the agent process |
 | `security.enforceProductionPermissions: true` in production | Fails closed if the write-only inbox/private state directories are misconfigured |
 | Humans review the actual action | The approval decision is about the concrete email payload or exact mailbox operation shown in Telegram |
 
-If you run agent-gate and your agent as the same Unix user, or give the agent direct send credentials, agent-gate is still useful as an approval workflow — but it is **not** a structural security boundary.
+If you run Nightdrop and your agent as the same Unix user, or give the agent direct send credentials, Nightdrop is still useful as an approval workflow — but it is **not** a structural security boundary.
 
 See [docs/deployment.md](docs/deployment.md) for the production filesystem setup, [docs/hermes.md](docs/hermes.md) for bounded mailbox and outbound Hermes integration, [docs/credential-handoff.md](docs/credential-handoff.md) for operator responsibilities, [docs/smtp-onboarding.md](docs/smtp-onboarding.md) for simple Gmail App Password setup, [docs/mailbox-cleanup.md](docs/mailbox-cleanup.md) for human-gated Spam/Trash unread cleanup, and [docs/oauth-onboarding.md](docs/oauth-onboarding.md) for narrower OAuth authorization.
 
 ## How This Differs from Hermes Built-In Approval
 
-Hermes Agent already has useful approval controls for tool and command risk. agent-gate is complementary, not a replacement.
+Hermes Agent already has useful approval controls for tool and command risk. Nightdrop is complementary, not a replacement.
 
-| Capability | Hermes built-in approval | agent-gate |
+| Capability | Hermes built-in approval | Nightdrop |
 |------------|--------------------------|------------|
 | Primary approval target | Tool calls / shell commands | Exact email payloads and mailbox operations |
 | Typical question | “Should this command/tool run?” | “Should this email be sent, or should this exact message be moved or unsubscribed?” |
 | Final executor | Hermes tool runtime | Separate deterministic service |
-| Send credentials | May live in Hermes if configured | Live only in agent-gate |
+| Send credentials | May live in Hermes if configured | Live only in Nightdrop |
 | Best for | Dangerous local commands, tool use, operational actions | Email, replies, and bounded mailbox actions |
 | Security shape | Tool-level/behavioral approval | Payload-level structural boundary |
 
-For example, Hermes approval can help decide whether a risky command should run. agent-gate is for a different problem: Hermes drafts an email, but a separate process with separate credentials sends only the exact payload a human approved.
+For example, Hermes approval can help decide whether a risky command should run. Nightdrop is for a different problem: Hermes drafts an email, but a separate process with separate credentials sends only the exact payload a human approved.
 
 ## Security Model
 
 This isn't "we told the AI to be careful." It's structural:
 
-- **Process isolation** — agent-gate runs as a separate OS user. The AI agent cannot read, modify, or delete drafts after submission.
+- **Process isolation** — Nightdrop runs as a separate OS user. The AI agent cannot read, modify, or delete drafts after submission.
 - **Write-only inbox** — the agent can drop files in but cannot read or list the directory (Unix dropbox permissions: `1730`).
 - **Hash-verified approvals** — a full SHA-256 hash is computed at preview time and bound to an unguessable approval nonce. If the draft is modified between preview and approval, the approval is rejected.
 - **From-address enforcement** — the `from` field in drafts is ignored. The approval preview shows the configured sender address and labels the draft `from` as ignored, preventing approval-screen spoofing.
@@ -87,8 +87,8 @@ This isn't "we told the AI to be careful." It's structural:
 This path is for local evaluation and development. It does not create the separate-user security boundary described above. Use [docs/deployment.md](docs/deployment.md) and the installed credential-onboarding wrappers for production.
 
 ```bash
-git clone https://github.com/404Dealer/agent-gate.git
-cd agent-gate
+git clone https://github.com/404Dealer/nightdrop.git
+cd nightdrop
 npm ci
 cp config.example.yaml config.yaml
 # Set the environment variables referenced by config.yaml.
@@ -100,7 +100,7 @@ npm start
 
 1. Message [@BotFather](https://t.me/BotFather) on Telegram
 2. Send `/newbot` and follow the prompts
-3. For local development, resolve the bot-token placeholder through your environment. For production, use `sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram`; do not place a literal token in config.
+3. For local development, resolve the bot-token placeholder through your environment. For production, use `sudo /opt/nightdrop/scripts/configure-provider-secrets.sh telegram`; do not place a literal token in config.
 4. Get your Telegram user ID (message [@userinfobot](https://t.me/userinfobot)) and add it to `allowedUsers`
 5. Send `/start` to your new bot
 
@@ -112,7 +112,7 @@ npm run dev  # Runs with tsx, no build step needed
 
 ## Integration
 
-If your agent can write a JSON file, it can use agent-gate. No SDK, no API client, no runtime dependency.
+If your agent can write a JSON file, it can use Nightdrop. No SDK, no API client, no runtime dependency.
 
 ### Write a Draft
 
@@ -141,7 +141,7 @@ Drop a `.json` file into the configured inbox directory:
 }
 ```
 
-That's it. agent-gate handles the rest.
+That's it. Nightdrop handles the rest.
 
 ### Works With Any Framework
 
@@ -189,7 +189,7 @@ That's it. agent-gate handles the rest.
 
 ```yaml
 telegram:
-  botToken: "${AGENT_GATE_BOT_TOKEN}"
+  botToken: "${NIGHTDROP_BOT_TOKEN}"
   allowedUsers: [123456789]  # Your Telegram user ID(s)
 
 watch:
@@ -210,34 +210,34 @@ providers:
     port: 465
     tlsMode: "implicit"
     username: "you@gmail.com"
-    password: "${GMAIL_APP_PASSWORD}"
+    password: "${NIGHTDROP_GMAIL_APP_PASSWORD}"
     fromAddress: "you@gmail.com"
     displayName: "Your Name"
 
   gmail:
     type: "email-gmail"
-    clientId: "${GOOGLE_CLIENT_ID}"
+    clientId: "${NIGHTDROP_GOOGLE_CLIENT_ID}"
     # Desktop/public-client OAuth does not use clientSecret.
-    refreshToken: "${GOOGLE_REFRESH_TOKEN}"
+    refreshToken: "${NIGHTDROP_GOOGLE_REFRESH_TOKEN}"
     fromAddress: "you@gmail.com"
     displayName: "Your Name"
 
   outlook:
     type: "email-outlook"
-    clientId: "${MICROSOFT_CLIENT_ID}"
+    clientId: "${NIGHTDROP_MICROSOFT_CLIENT_ID}"
     # Omit clientSecret for public-client PKCE/device flows.
-    refreshToken: "${MICROSOFT_REFRESH_TOKEN}"
+    refreshToken: "${NIGHTDROP_MICROSOFT_REFRESH_TOKEN}"
     tenantId: "common"
     fromAddress: "you@outlook.com"
     displayName: "Your Name"
 
   zoho:
     type: "email-zoho"
-    clientId: "${ZOHO_CLIENT_ID}"
-    clientSecret: "${ZOHO_CLIENT_SECRET}"
-    refreshToken: "${ZOHO_REFRESH_TOKEN}"
+    clientId: "${NIGHTDROP_ZOHO_CLIENT_ID}"
+    clientSecret: "${NIGHTDROP_ZOHO_CLIENT_SECRET}"
+    refreshToken: "${NIGHTDROP_ZOHO_REFRESH_TOKEN}"
     region: "us"
-    accountId: "${ZOHO_ACCOUNT_ID}"
+    accountId: "${NIGHTDROP_ZOHO_ACCOUNT_ID}"
     fromAddress: "you@yourdomain.com"
 
   log:
@@ -263,8 +263,8 @@ Each mailbox profile maps one account to one provider. The base `outlook` provid
 providers:
   outlook-work:
     type: "email-outlook"
-    clientId: "${MICROSOFT_WORK_CLIENT_ID}"
-    refreshToken: "${MICROSOFT_WORK_REFRESH_TOKEN}"
+    clientId: "${NIGHTDROP_MICROSOFT_WORK_CLIENT_ID}"
+    refreshToken: "${NIGHTDROP_MICROSOFT_WORK_REFRESH_TOKEN}"
     tenantId: "common"
     fromAddress: "you@outlook.com"
     mailboxAccess: true # Requires delegated Mail.ReadWrite.
@@ -274,7 +274,7 @@ mailboxProfiles:
     provider: outlook-work
 ```
 
-For production, run `sudo /opt/agent-gate/scripts/oauth-setup.sh outlook --profile work`. The installed helper requests the required mailbox scope and creates the provider/profile binding atomically; you do not need to edit private production config by hand.
+For production, run `sudo /opt/nightdrop/scripts/oauth-setup.sh outlook --profile work`. The installed helper requests the required mailbox scope and creates the provider/profile binding atomically; you do not need to edit private production config by hand.
 
 ### Secrets
 
@@ -282,8 +282,8 @@ Config placeholders support two resolvers:
 
 | Syntax | Source | Example |
 |--------|--------|---------|
-| `${VAR_NAME}` | Environment variable | `${AGENT_GATE_BOT_TOKEN}` |
-| `${PASS:path}` | [pass](https://www.passwordstore.org/) (Unix password manager) | `${PASS:agent-gate/bot-token}` |
+| `${NIGHTDROP_VAR_NAME}` | Environment variable | `${NIGHTDROP_BOT_TOKEN}` |
+| `${PASS:path}` | [pass](https://www.passwordstore.org/) (Unix password manager) | `${PASS:nightdrop/bot-token}` |
 
 **Unresolved placeholders cause a hard failure at startup.** No silent empty strings.
 
@@ -293,21 +293,21 @@ For the Himalaya-style self-hosted path, no Google Cloud project or OAuth client
 
 ```bash
 # Human-controlled terminal only
-sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
+sudo /opt/nightdrop/scripts/configure-provider-secrets.sh telegram
 # Existing one-account compatibility setup:
-sudo /opt/agent-gate/scripts/smtp-setup.sh gmail
+sudo /opt/nightdrop/scripts/smtp-setup.sh gmail
 # Or create a named Gmail mailbox (repeat with a unique profile per account):
-sudo /opt/agent-gate/scripts/smtp-setup.sh gmail --profile personal
+sudo /opt/nightdrop/scripts/smtp-setup.sh gmail --profile personal
 ```
 
-The SMTP helper verifies Gmail over TLS, stores the App Password directly under `agentgate`, writes only a versioned `${PASS:...}` reference to private config, and restarts the service. App Passwords are simpler but broader than the Gmail API `gmail.send` scope. See **[docs/smtp-onboarding.md](docs/smtp-onboarding.md)** for prerequisites, revocation, and exact behavior.
+The SMTP helper verifies Gmail over TLS, stores the App Password directly under `nightdrop`, writes only a versioned `${PASS:...}` reference to private config, and restarts the service. App Passwords are simpler but broader than the Gmail API `gmail.send` scope. See **[docs/smtp-onboarding.md](docs/smtp-onboarding.md)** for prerequisites, revocation, and exact behavior.
 
 ### Human-gated Spam/Trash unread cleanup
 
 After Gmail SMTP onboarding, an operator can clear unread badges in Gmail's Spam and Trash folders without exposing mailbox credentials to Hermes:
 
 ```bash
-sudo /opt/agent-gate/scripts/mailbox-cleanup.sh gmail
+sudo /opt/nightdrop/scripts/mailbox-cleanup.sh gmail
 ```
 
 The helper previews counts, requires the exact phrase `MARK READ`, and adds only `\Seen` to the snapshotted unread UIDs. It never deletes, moves, empties, or displays messages. See **[docs/mailbox-cleanup.md](docs/mailbox-cleanup.md)** for UID snapshot semantics, auditing, partial outcomes, and troubleshooting.
@@ -317,13 +317,13 @@ The helper previews counts, requires the exact phrase `MARK READ`, and adds only
 The production installer exposes one fixed Unix-socket client without giving Hermes Gmail App Passwords, Microsoft refresh tokens, arbitrary IMAP, or arbitrary Graph access:
 
 ```bash
-/usr/local/bin/agent-gate-mailbox profiles
-/usr/local/bin/agent-gate-mailbox list --profile personal --unread --limit 20
-/usr/local/bin/agent-gate-mailbox list --profile work --unread --limit 20
-/usr/local/bin/agent-gate-mailbox read MESSAGE_REF
-/usr/local/bin/agent-gate-mailbox mark-read MESSAGE_REF [MESSAGE_REF ...]
-/usr/local/bin/agent-gate-mailbox propose-trash MESSAGE_REF [MESSAGE_REF ...] --context 'Why these messages are unwanted'
-/usr/local/bin/agent-gate-mailbox propose-unsubscribe MESSAGE_REF --context 'Why this subscription should stop'
+/usr/local/bin/nightdrop-mailbox profiles
+/usr/local/bin/nightdrop-mailbox list --profile personal --unread --limit 20
+/usr/local/bin/nightdrop-mailbox list --profile work --unread --limit 20
+/usr/local/bin/nightdrop-mailbox read MESSAGE_REF
+/usr/local/bin/nightdrop-mailbox mark-read MESSAGE_REF [MESSAGE_REF ...]
+/usr/local/bin/nightdrop-mailbox propose-trash MESSAGE_REF [MESSAGE_REF ...] --context 'Why these messages are unwanted'
+/usr/local/bin/nightdrop-mailbox propose-unsubscribe MESSAGE_REF --context 'Why this subscription should stop'
 ```
 
 Each named profile points to one Gmail SMTP/App Password provider or one Outlook provider. With one configured profile, `list` may omit `--profile`; with multiple profiles it must select one explicitly. Returned opaque references bind the profile and backend, so `read`, `mark-read`, Trash, and unsubscribe route back to the same account. Gmail references bind `UIDVALIDITY + UID`; Outlook references use Graph immutable message IDs. Legacy Gmail v1 references remain bound only to the unique `gmail-smtp` compatibility provider, whether that provider is exposed as implicit `default` or explicitly named; all other named Gmail providers reject them. Reading does not mark mail read. Mark-read affects at most 20 exact references. Mixed-profile bulk requests fail closed. Trash moves and unsubscribe requests require hash-bound Telegram approval.
@@ -336,15 +336,15 @@ A production installation can acquire provider refresh tokens without giving the
 
 ```bash
 # Human-controlled terminal only
-sudo /opt/agent-gate/scripts/configure-provider-secrets.sh telegram
+sudo /opt/nightdrop/scripts/configure-provider-secrets.sh telegram
 # Then authorize one email provider:
-sudo /opt/agent-gate/scripts/oauth-setup.sh gmail
-sudo /opt/agent-gate/scripts/oauth-setup.sh outlook
-sudo /opt/agent-gate/scripts/oauth-setup.sh outlook --profile work  # bounded Inbox + send
-sudo /opt/agent-gate/scripts/oauth-setup.sh zoho
+sudo /opt/nightdrop/scripts/oauth-setup.sh gmail
+sudo /opt/nightdrop/scripts/oauth-setup.sh outlook
+sudo /opt/nightdrop/scripts/oauth-setup.sh outlook --profile work  # bounded Inbox + send
+sudo /opt/nightdrop/scripts/oauth-setup.sh zoho
 ```
 
-The approval-bot token must exist first because the OAuth wrapper restarts the service after a successful commit. The helper drops privileges to `agentgate` with a clean environment, uses state-bound PKCE browser authorization, writes tokens directly to the encrypted password store, atomically updates private config with versioned `${PASS:...}` references, and restarts the service. Gmail, Outlook, and Zoho use SSH-forwarded loopback callbacks by default. Outlook device authorization is available only as an explicit `--device-code` fallback.
+The approval-bot token must exist first because the OAuth wrapper restarts the service after a successful commit. The helper drops privileges to `nightdrop` with a clean environment, uses state-bound PKCE browser authorization, writes tokens directly to the encrypted password store, atomically updates private config with versioned `${PASS:...}` references, and restarts the service. Gmail, Outlook, and Zoho use SSH-forwarded loopback callbacks by default. Outlook device authorization is available only as an explicit `--device-code` fallback.
 
 See **[docs/oauth-onboarding.md](docs/oauth-onboarding.md)** for provider registration and exact commands.
 
@@ -460,7 +460,7 @@ If the draft was modified after the preview was sent, approval is rejected with 
 
 ## Production Deployment
 
-For maximum isolation, run agent-gate as a dedicated system user:
+For maximum isolation, run Nightdrop as a dedicated system user:
 
 1. **Create a service user** — no login shell, locked home directory
 2. **Set up credentials** — dedicated `pass` store for the service user
@@ -473,7 +473,7 @@ See **[docs/deployment.md](docs/deployment.md)** for the complete production har
 ## Project Structure
 
 ```
-agent-gate/
+nightdrop/
 ├── src/
 │   ├── index.ts          # Entry point
 │   ├── config.ts         # Config loader + secret resolution
@@ -523,9 +523,9 @@ agent-gate/
 - ✅ Authenticated TLS SMTP provider and Gmail App Password onboarding
 - ✅ Outlook / Microsoft Graph email provider
 - ✅ Zoho Mail email provider
-- ✅ Direct-to-`agentgate` browser/device OAuth onboarding for Gmail, Outlook, and Zoho
+- ✅ Direct-to-`nightdrop` browser/device OAuth onboarding for Gmail, Outlook, and Zoho
 - ✅ Log-only dry-run provider
-- ✅ `${PASS:key}` and `${ENV}` secret resolvers
+- ✅ `${PASS:key}` and `${NIGHTDROP_*}` secret resolvers
 - ✅ Schema validation with size/count bounds
 - ✅ JSON audit logging
 - ✅ Symlink/device file rejection
@@ -552,7 +552,7 @@ agent-gate/
 
 The agent security space is full of behavioral guardrails — system prompts, content filters, output classifiers. These are valuable but fundamentally brittle: they depend on model compliance, which prompt injection can subvert.
 
-agent-gate takes a different approach: **structural security**. The approval gate is a separate process, running as a separate user, with its own credentials. When the deployment requirements above hold, prompt injection alone cannot make the AI agent approve its own drafts because the agent cannot access the approval channel or execution credentials.
+Nightdrop takes a different approach: **structural security**. The approval gate is a separate process, running as a separate user, with its own credentials. When the deployment requirements above hold, prompt injection alone cannot make the AI agent approve its own drafts because the agent cannot access the approval channel or execution credentials.
 
 This is the same principle behind air-gapped networks, hardware security modules, and two-person integrity controls — applied to AI agents.
 
@@ -567,19 +567,19 @@ skill/
     └── draft-email.sh    # Helper script for drafting emails
 ```
 
-The skill teaches an AI agent how to write properly-formatted draft files. The agent learns the schema, constraints, and workflow — then uses `sg agentgate-inbox` (or the helper script) to drop drafts into the inbox.
+The skill teaches an AI agent how to write properly-formatted draft files. The agent learns the schema, constraints, and workflow — then uses `sg nightdrop-inbox` (or the helper script) to drop drafts into the inbox.
 
-Install the skill in your agent framework, point it at your agent-gate inbox, and your agent can propose emails that you approve via Telegram.
+Install the skill in your agent framework, point it at your Nightdrop inbox, and your agent can propose emails that you approve via Telegram.
 
 ## Hermes Agent Integration
 
 See [docs/hermes.md](docs/hermes.md) for a dedicated Hermes setup guide.
 
-agent-gate is intentionally designed as a Hermes-compatible outbound-action gate:
+Nightdrop is intentionally designed as a Hermes-compatible outbound-action gate:
 
 1. Install this repo's `skill/` directory as a Hermes skill, or keep it in a project and load it for sessions that may draft email.
-2. Give Hermes write-only access to `/opt/agent-gate/drafts/inbox` through the `agentgate-inbox` group.
-3. Do **not** give Hermes the SMTP/API credentials that agent-gate uses to send. Hermes should read/search/draft; agent-gate should send.
+2. Give Hermes write-only access to `/opt/nightdrop/drafts/inbox` through the `nightdrop-inbox` group.
+3. Do **not** give Hermes the SMTP/API credentials that Nightdrop uses to send. Hermes should read/search/draft; Nightdrop should send.
 4. For a draft request, Hermes writes JSON only and then tells the user it is pending approval. The approved send happens outside the Hermes process.
 
 That separation is what makes the gate stronger than an agent asking, “Should I send this?” and then calling a send tool itself.

@@ -9,7 +9,7 @@ export function parseMailboxCleanupArgs(args: string[]): MailboxCleanupOptions {
     throw new Error('Provider must be gmail');
   }
 
-  let configPath = '/opt/agent-gate/config/config.yaml';
+  let configPath = '/opt/nightdrop/config/config.yaml';
   let configSeen = false;
   for (let index = 0; index < rest.length; index += 1) {
     const option = rest[index];

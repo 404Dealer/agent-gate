@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# draft-email.sh — Helper script to drop an email draft into agent-gate's inbox
+# draft-email.sh — Helper script to drop an email draft into Nightdrop's inbox
 # Usage: ./draft-email.sh <to> <subject> <body_html> [provider] [context] [source]
 #
-# Requires: membership in agentgate-inbox group, agent-gate running
+# Requires: membership in nightdrop-inbox group, Nightdrop running
 
 set -euo pipefail
 
@@ -55,11 +55,11 @@ DRAFT_JSON=$(cat <<EOF
 EOF
 )
 
-INBOX="${AGENT_GATE_INBOX:-/opt/agent-gate/drafts/inbox}"
+INBOX="${NIGHTDROP_INBOX:-/opt/nightdrop/drafts/inbox}"
 
-sg agentgate-inbox -c "cat > '$INBOX/$FILENAME' << 'AGENTGATE_DRAFT'
+sg nightdrop-inbox -c "cat > '$INBOX/$FILENAME' << 'NIGHTDROP_DRAFT'
 $DRAFT_JSON
-AGENTGATE_DRAFT"
+NIGHTDROP_DRAFT"
 
 echo "Draft submitted: $FILENAME"
 echo "Waiting for approval in Telegram."

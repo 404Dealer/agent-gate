@@ -29,7 +29,7 @@ const sampleDraft = (): Draft => ({
 });
 
 test('config accepts email-gmail provider credentials', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-gmail-config-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-gmail-config-'));
   try {
     const configPath = join(dir, 'config.yaml');
     await writeFile(configPath, `

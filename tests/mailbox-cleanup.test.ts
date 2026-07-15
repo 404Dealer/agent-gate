@@ -31,7 +31,7 @@ const execFile = promisify(execFileCallback);
 test('mailbox cleanup CLI accepts only the fixed Gmail operation and non-secret config path', () => {
   assert.deepEqual(parseMailboxCleanupArgs(['gmail']), {
     provider: 'gmail',
-    configPath: '/opt/agent-gate/config/config.yaml'
+    configPath: '/opt/nightdrop/config/config.yaml'
   });
   assert.deepEqual(parseMailboxCleanupArgs(['gmail', '--config', '/safe/config.yaml']), {
     provider: 'gmail',
@@ -246,7 +246,7 @@ test('Gmail IMAP adapter verifies the approved UID set after STORE', async () =>
 });
 
 test('Gmail cleanup credentials use the absolute pass pin instead of PATH', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-mailbox-config-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-mailbox-config-'));
   try {
     const configPath = join(dir, 'config.yaml');
     const pathDir = join(dir, 'path');
@@ -263,7 +263,7 @@ providers:
     port: 465
     tlsMode: implicit
     username: owner@gmail.com
-    password: "\${PASS:agent-gate/smtp-password-0123456789abcdef01234567}"
+    password: "\${PASS:nightdrop/smtp-password-0123456789abcdef01234567}"
     fromAddress: owner@gmail.com
 `, { encoding: 'utf8', mode: 0o600 });
     await writeFile(
@@ -280,7 +280,7 @@ providers:
     await chmod(pathPass, 0o700);
 
     const credentials = await loadGmailCleanupCredentials(configPath, {
-      AGENT_GATE_PASS_BIN: pinnedPass,
+      NIGHTDROP_PASS_BIN: pinnedPass,
       PATH: pathDir,
       FAKE_PASS_SELECTION: selectionPath,
       FAKE_PASS_ARGS: argsPath
@@ -292,7 +292,7 @@ providers:
     });
     assert.equal(await readFile(selectionPath, 'utf8'), 'pinned');
     const args = await readFile(argsPath, 'utf8');
-    assert.equal(args, 'show\nagent-gate/smtp-password-0123456789abcdef01234567\n');
+    assert.equal(args, 'show\nnightdrop/smtp-password-0123456789abcdef01234567\n');
     assert.doesNotMatch(args, /abcdefghijklmnop/);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -521,8 +521,8 @@ test('production mailbox cleanup wrapper preserves the credential boundary and f
   assert.match(wrapper, /resolve_trusted_executable runuser/);
   assert.match(wrapper, /resolve_trusted_executable env/);
   assert.match(wrapper, /resolve_trusted_executable pass/);
-  assert.match(wrapper, /AGENT_GATE_PASS_BIN="\$PASS_BIN"/);
-  assert.match(wrapper, /AGENT_GATE_AUDIT_LOG="\$INSTALL_DIR\/audit\.log"/);
+  assert.match(wrapper, /NIGHTDROP_PASS_BIN="\$PASS_BIN"/);
+  assert.match(wrapper, /NIGHTDROP_AUDIT_LOG="\$INSTALL_DIR\/audit\.log"/);
   assert.match(wrapper, /"\$RUNUSER_BIN" -u "\$SERVICE_USER" -- "\$ENV_BIN" -i/);
   assert.match(wrapper, /dist\/mailbox-cleanup\.js/);
   assert.match(wrapper, /"gmail" --config "\$CONFIG_PATH"/);
@@ -533,7 +533,7 @@ test('production mailbox cleanup wrapper preserves the credential boundary and f
 });
 
 test('mailbox cleanup help cannot execute an attacker-provided PATH command before validation', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-mailbox-wrapper-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-mailbox-wrapper-'));
   try {
     const binDir = join(dir, 'bin');
     const copiedWrapper = join(dir, 'mailbox-cleanup.sh');
@@ -565,7 +565,7 @@ test('mailbox cleanup help cannot execute an attacker-provided PATH command befo
 });
 
 test('mailbox cleanup audit appends counts-only JSONL and rejects symlinks', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-mailbox-audit-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-mailbox-audit-'));
   try {
     const auditPath = join(dir, 'audit.log');
     const redirectedPath = join(dir, 'redirected.log');
@@ -632,7 +632,7 @@ test('mailbox cleanup skips confirmation for no-op and performs no writes when c
 });
 
 test('mailbox cleanup rejects ineligible Gmail config before reading pass', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-gate-mailbox-invalid-config-'));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-mailbox-invalid-config-'));
   try {
     const configPath = join(dir, 'config.yaml');
     const markerPath = join(dir, 'pass-invoked');
@@ -643,7 +643,7 @@ test('mailbox cleanup rejects ineligible Gmail config before reading pass', asyn
     await chmod(configPath, 0o600);
 
     await assert.rejects(
-      () => loadGmailCleanupCredentials(configPath, { AGENT_GATE_PASS_BIN: passPath }),
+      () => loadGmailCleanupCredentials(configPath, { NIGHTDROP_PASS_BIN: passPath }),
       /must remain an isolated pass reference/
     );
     await assert.rejects(() => readFile(markerPath, 'utf8'));

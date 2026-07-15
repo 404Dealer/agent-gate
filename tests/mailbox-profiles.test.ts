@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { AgentGateConfig } from '../src/config.js';
+import type { NightdropConfig } from '../src/config.js';
 import { parseMailboxClientArgs } from '../src/mailbox-client.js';
 import { mailboxProfilesFromConfig } from '../src/mailbox-broker/profiles.js';
 import { decodeInboxReference, encodeInboxReference, encodeOutlookInboxReference } from '../src/mailbox-broker/reference.js';
@@ -34,7 +34,7 @@ const outlookProvider = (address: string, mailboxAccess = true) => ({
   mailboxAccess
 });
 
-const configWithProfiles = (): AgentGateConfig => ({
+const configWithProfiles = (): NightdropConfig => ({
   telegram: { botToken: 'test-token', allowedUsers: [1] },
   watch: { directory: './drafts/inbox', pollIntervalMs: 2000 },
   approval: { bodyPreviewChars: 2000, allowTruncatedApproval: false },
@@ -189,7 +189,7 @@ test('legacy Gmail references route to the unique gmail-smtp compatibility profi
   };
   const broker = new MailboxBrokerServer(
     new Map([['personal', compatibility], ['work', work]]),
-    '/run/agent-gate-mailbox/broker.sock',
+    '/run/nightdrop-mailbox/broker.sock',
     1,
     async (profile) => ({ profile }),
     async (profile) => ({ profile })
@@ -227,7 +227,7 @@ test('profile routing rejects a canonical reference whose backend disagrees with
   };
   const broker = new MailboxBrokerServer(
     new Map([['work', work]]),
-    '/run/agent-gate-mailbox/broker.sock',
+    '/run/nightdrop-mailbox/broker.sock',
     1,
     async () => { proposals += 1; return {}; },
     async () => { proposals += 1; return {}; }
@@ -298,7 +298,7 @@ test('profiles response exposes the exact outbound provider mapping', async () =
   };
   const broker = new MailboxBrokerServer(
     new Map([['work', adapter]]),
-    '/run/agent-gate-mailbox/broker.sock',
+    '/run/nightdrop-mailbox/broker.sock',
     1
   ) as unknown as { execute(request: unknown): Promise<unknown> };
   const result = await broker.execute({

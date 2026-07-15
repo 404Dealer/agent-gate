@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { Bot, InlineKeyboard } from 'grammy';
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
-import type { AgentGateConfig } from './config.js';
+import type { NightdropConfig } from './config.js';
 import type { DraftWatcher } from './watcher.js';
 import { DraftSchema, updateStatus, type Draft } from './schema.js';
 import { Executor, type ExecutionResult } from './executor.js';
@@ -328,13 +328,13 @@ export function buildMailboxUnsubscribePreview(
   };
 }
 
-export class AgentGateBot {
+export class NightdropBot {
   private readonly bot: Bot;
   private readonly approvalIndex = new Map<string, ApprovalTokenRecord>();
   private approvalPruneTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
-    private readonly config: AgentGateConfig,
+    private readonly config: NightdropConfig,
     private readonly watcher: DraftWatcher,
     private readonly executor: Executor,
     private readonly draftsRoot: string
@@ -347,7 +347,7 @@ export class AgentGateBot {
 
     this.bot.catch((err) => {
       // eslint-disable-next-line no-console
-      console.error('[agent-gate] bot error:', err.message ?? err);
+      console.error('[nightdrop] bot error:', err.message ?? err);
     });
 
     this.bot.command('start', async (ctx) => {
@@ -355,10 +355,10 @@ export class AgentGateBot {
       if (!fromId || !this.config.telegram.allowedUsers.includes(fromId)) {
         await ctx.reply('🔒 This bot is private. You are not authorized.');
         // eslint-disable-next-line no-console
-        console.log(`[agent-gate] unauthorized /start from user ${fromId} (@${ctx.from?.username ?? 'unknown'})`);
+        console.log(`[nightdrop] unauthorized /start from user ${fromId} (@${ctx.from?.username ?? 'unknown'})`);
         return;
       }
-      await ctx.reply('agent-gate is active. Draft approvals will appear here. Only authorized users can approve or deny.');
+      await ctx.reply('Nightdrop is active. Draft approvals will appear here. Only authorized users can approve or deny.');
     });
 
     this.bot.use(async (ctx, next) => {
@@ -490,7 +490,7 @@ export class AgentGateBot {
         const safeError = err instanceof Error ? err.message : 'Approval preview failed';
         await this.watcher.failPending(filePath, safeError).catch(() => {});
         // eslint-disable-next-line no-console
-        console.error(`[agent-gate] failed to send draft preview for ${basename(filePath)}:`, safeError);
+        console.error(`[nightdrop] failed to send draft preview for ${basename(filePath)}:`, safeError);
       }
     });
   }
@@ -561,7 +561,7 @@ export class AgentGateBot {
     sendResults.forEach((result, index) => {
       if (result.status === 'rejected') {
         // eslint-disable-next-line no-console
-        console.error(`[agent-gate] failed to send approval preview to ${this.config.telegram.allowedUsers[index]}:`, result.reason);
+        console.error(`[nightdrop] failed to send approval preview to ${this.config.telegram.allowedUsers[index]}:`, result.reason);
       }
     });
   }
