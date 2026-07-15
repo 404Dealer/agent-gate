@@ -31,30 +31,33 @@ USAGE
 }
 
 assert_root_owned_path() {
-  local current="$1" owner mode permissions
-  while [[ "$current" != "/" ]]; do
+  local current="$1" owner mode permissions parent
+  while true; do
     read -r owner mode < <(/usr/bin/stat -Lc '%U %a' -- "$current") || return 1
     permissions=$((8#$mode))
     if [[ "$owner" != "root" ]] || (( (permissions & 8#022) != 0 )); then
       echo "Refusing non-root-owned or writable privileged path: $current" >&2
       return 1
     fi
-    current="$(/usr/bin/dirname -- "$current")" || return 1
+    [[ "$current" == "/" ]] && break
+    parent="$(/usr/bin/dirname -- "$current")" || return 1
+    [[ "$parent" != "$current" ]] || return 1
+    current="$parent"
   done
 }
 
 validate_trusted_path() {
-  local directory owner mode permissions
+  local directory canonical
   local -a directories=()
   IFS=':' read -r -a directories <<< "$TRUSTED_PATH"
   for directory in "${directories[@]}"; do
     [[ -d "$directory" ]] || continue
-    read -r owner mode < <(/usr/bin/stat -Lc '%U %a' -- "$directory") || return 1
-    permissions=$((8#$mode))
-    if [[ "$owner" != "root" ]] || (( (permissions & 8#022) != 0 )); then
-      echo "Refusing untrusted executable path directory: $directory" >&2
+    canonical="$(/usr/bin/readlink -e -- "$directory")" || return 1
+    [[ -d "$canonical" ]] || return 1
+    assert_root_owned_path "$canonical" || {
+      echo "Refusing untrusted executable path directory or ancestor: $directory" >&2
       return 1
-    fi
+    }
   done
 }
 
@@ -86,7 +89,11 @@ if [[ $# -lt 1 ]]; then
 fi
 validate_trusted_path
 assert_root_owned_path "$SCRIPT_PATH"
-if ! /usr/bin/id -- "$SERVICE_USER" >/dev/null 2>&1; then
+if ! ID_BIN="$(resolve_trusted_executable id)"; then
+  echo "A trusted root-owned id executable is required on the fixed system PATH." >&2
+  exit 1
+fi
+if ! "$ID_BIN" -- "$SERVICE_USER" >/dev/null 2>&1; then
   echo "Missing service user: $SERVICE_USER" >&2
   exit 1
 fi

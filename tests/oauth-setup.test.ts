@@ -11,7 +11,7 @@ import { persistGmailOnboarding, persistOutlookOnboarding, persistZohoOnboarding
 import { parseOAuthSetupArgs } from '../src/oauth/cli-options.js';
 import { buildZohoAuthorizationUrl, exchangeZohoAuthorizationCode, fetchZohoSenderChoices, getZohoRegionEndpoints, validateZohoCallbackRegion } from '../src/oauth/zoho.js';
 import { parseSelection, sanitizeTerminalText } from '../src/oauth/selection.js';
-import { chmod, lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -373,15 +373,18 @@ test('production installer rejects unmanaged service identity and capability-gro
         'BUILD_GROUP=nightdrop-build-owned',
         'BUILD_USER_CREATED=true',
         'BUILD_GROUP_CREATED=true',
+        'BUILD_IDENTITY_OWNERSHIP_UNCERTAIN=false',
         'BUILD_UID=12345',
+        'BUILD_GID=12346',
         'BUILD_USER_PRESENT=true',
         'BUILD_GROUP_PRESENT=true',
-        'BUILD_HOME=""',
+        'BUILD_HOME=/tmp/nightdrop-build-owned-home',
         'BUILD_ROOT=""',
         'MAILBOX_CLI_TEMP=""',
         'CLEANUP_LOG="$2"',
         'nss_entry_state() { if [[ "$1" == "passwd" ]]; then [[ "$BUILD_USER_PRESENT" == true ]] && printf "present\\n" || printf "absent\\n"; else [[ "$BUILD_GROUP_PRESENT" == true ]] && printf "present\\n" || printf "absent\\n"; fi; }',
-        'nss_entry_is_absent() { [[ "$(nss_entry_state "$1" "$2")" == "absent" ]]; }',
+        'getent() { if [[ "$1" == group ]]; then printf "nightdrop-build-owned:x:12346:\\n"; elif [[ "$BUILD_USER_PRESENT" == true ]]; then printf "nightdrop-build-owned:x:12345:12346::/tmp/nightdrop-build-owned-home:/usr/sbin/nologin\\n"; elif [[ $# -eq 1 ]]; then printf "root:x:0:0:root:/root:/bin/bash\\n"; else return 2; fi; }',
+        'id() { case "$1" in -u) printf "12345\\n" ;; -gn|-Gn) printf "nightdrop-build-owned\\n" ;; *) return 1 ;; esac; }',
         'pkill() { printf "pkill\\n" >> "$CLEANUP_LOG"; }',
         'userdel() { printf "userdel\\n" >> "$CLEANUP_LOG"; BUILD_USER_PRESENT=false; }',
         'groupdel() { printf "groupdel\\n" >> "$CLEANUP_LOG"; BUILD_GROUP_PRESENT=false; }',
@@ -403,10 +406,12 @@ test('production installer rejects unmanaged service identity and capability-gro
         'BUILD_GROUP=nightdrop-build-owned',
         'BUILD_USER_CREATED=true',
         'BUILD_GROUP_CREATED=true',
+        'BUILD_IDENTITY_OWNERSHIP_UNCERTAIN=false',
         'BUILD_UID=12345',
+        'BUILD_GID=12346',
         'CLEANUP_LOG="$2"',
         'nss_entry_state() { return 3; }',
-        'nss_entry_is_absent() { return 1; }',
+
         'pkill() { printf "pkill\\n" >> "$CLEANUP_LOG"; }',
         'userdel() { printf "userdel\\n" >> "$CLEANUP_LOG"; return 1; }',
         'groupdel() { printf "groupdel\\n" >> "$CLEANUP_LOG"; return 1; }',
@@ -418,7 +423,7 @@ test('production installer rejects unmanaged service identity and capability-gro
       failedBuilderCleanupLog
     ], { encoding: 'utf8' });
     assert.equal(failedBuilderCleanup.status, 0, failedBuilderCleanup.stderr || failedBuilderCleanup.stdout);
-    assert.equal(await readFile(failedBuilderCleanupLog, 'utf8'), 'pkill\nuserdel\ngroupdel\n');
+    await assert.rejects(stat(failedBuilderCleanupLog), { code: 'ENOENT' });
 
     const unsafeManagedParent = spawnSync('/bin/bash', [
       '-c',
@@ -772,18 +777,20 @@ test('partial transient useradd failure cleans the proven user and group', async
         'BUILD_GROUP_CREATED=false',
         'BUILD_IDENTITY_OWNERSHIP_UNCERTAIN=false',
         'BUILD_UID=""',
+        'BUILD_GID=""',
         'USER_STATE=absent',
         'GROUP_STATE=absent',
         'CLEANUP_LOG="$2"',
         'nss_entry_state() { if [[ "$1" == passwd ]]; then printf "%s\\n" "$USER_STATE"; else printf "%s\\n" "$GROUP_STATE"; fi; }',
-        'getent() { if [[ "$1" == passwd ]]; then printf "nightdrop-build-test:x:4242:4343::/tmp/nightdrop-build-test-home:/usr/sbin/nologin\\n"; else printf "nightdrop-build-test:x:4343:\\n"; fi; }',
+        'getent() { if [[ "$1" == group ]]; then printf "nightdrop-build-test:x:4343:\\n"; elif [[ "$USER_STATE" == present ]]; then printf "nightdrop-build-test:x:4242:4343::/tmp/nightdrop-build-test-home:/usr/sbin/nologin\\n"; elif [[ $# -eq 1 ]]; then printf "root:x:0:0:root:/root:/bin/bash\\n"; else return 2; fi; }',
+        'id() { case "$1" in -u) printf "4242\\n" ;; -gn|-Gn) printf "nightdrop-build-test\\n" ;; *) return 1 ;; esac; }',
         'groupadd() { GROUP_STATE=present; return 0; }',
         'useradd() { USER_STATE=present; return 1; }',
         'pkill() { printf "pkill %s\\n" "$*" >> "$CLEANUP_LOG"; }',
         'userdel() { printf "userdel %s\\n" "$*" >> "$CLEANUP_LOG"; USER_STATE=absent; }',
         'groupdel() { printf "groupdel %s\\n" "$*" >> "$CLEANUP_LOG"; GROUP_STATE=absent; }',
         'if create_builder_identity; then exit 90; fi',
-        '[[ "$BUILD_USER_CREATED" == true && "$BUILD_GROUP_CREATED" == true && "$BUILD_UID" == 4242 ]]',
+        '[[ "$BUILD_USER_CREATED" == true && "$BUILD_GROUP_CREATED" == true && "$BUILD_UID" == 4242 && "$BUILD_GID" == 4343 ]]',
         'cleanup_builder_identity'
       ].join('; '),
       'installer-builder-partial',
@@ -795,6 +802,167 @@ test('partial transient useradd failure cleans the proven user and group', async
     assert.match(cleanup, /pkill -KILL -u 4242/);
     assert.match(cleanup, /userdel nightdrop-build-test/);
     assert.match(cleanup, /groupdel nightdrop-build-test/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('partial transient groupadd failure cleans only the proven group', async () => {
+  const installerPath = fileURLToPath(new URL('../scripts/install-production.sh', import.meta.url));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-builder-group-partial-'));
+  try {
+    const logPath = join(dir, 'cleanup.log');
+    const result = spawnSync('/bin/bash', [
+      '-c',
+      [
+        'source "$1"',
+        'BUILD_USER=nightdrop-build-test',
+        'BUILD_GROUP="$BUILD_USER"',
+        'BUILD_HOME=/tmp/nightdrop-build-test-home',
+        'BUILD_USER_CREATED=false',
+        'BUILD_GROUP_CREATED=false',
+        'BUILD_IDENTITY_OWNERSHIP_UNCERTAIN=false',
+        'BUILD_UID=""',
+        'BUILD_GID=""',
+        'GROUP_STATE=absent',
+        'CLEANUP_LOG="$2"',
+        'nss_entry_state() { if [[ "$1" == group ]]; then printf "%s\\n" "$GROUP_STATE"; else printf "absent\\n"; fi; }',
+        'getent() { if [[ "$1" == group ]]; then printf "nightdrop-build-test:x:4343:\\n"; else printf "root:x:0:0:root:/root:/bin/bash\\n"; fi; }',
+        'groupadd() { GROUP_STATE=present; return 1; }',
+        'groupdel() { printf "groupdel %s\\n" "$*" >> "$CLEANUP_LOG"; GROUP_STATE=absent; }',
+        'userdel() { printf "userdel %s\\n" "$*" >> "$CLEANUP_LOG"; }',
+        'pkill() { printf "pkill %s\\n" "$*" >> "$CLEANUP_LOG"; }',
+        'if create_builder_identity; then exit 90; fi',
+        '[[ "$BUILD_USER_CREATED" == false && "$BUILD_GROUP_CREATED" == true && "$BUILD_GID" == 4343 ]]',
+        'cleanup_builder_identity'
+      ].join('; '),
+      'installer-builder-group-partial',
+      installerPath,
+      logPath
+    ], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(await readFile(logPath, 'utf8'), 'groupdel nightdrop-build-test\n');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('transient ownership mismatch or NSS uncertainty forbids user deletion', async () => {
+  const installerPath = fileURLToPath(new URL('../scripts/install-production.sh', import.meta.url));
+  for (const scenario of ['mismatch', 'nss-error']) {
+    const dir = await mkdtemp(join(tmpdir(), `nightdrop-builder-${scenario}-`));
+    try {
+      const logPath = join(dir, 'cleanup.log');
+      const result = spawnSync('/bin/bash', [
+        '-c',
+        [
+          'source "$1"',
+          'SCENARIO="$2"',
+          'CLEANUP_LOG="$3"',
+          'BUILD_USER=nightdrop-build-test',
+          'BUILD_GROUP="$BUILD_USER"',
+          'BUILD_HOME=/tmp/nightdrop-build-test-home',
+          'BUILD_USER_CREATED=false',
+          'BUILD_GROUP_CREATED=false',
+          'BUILD_IDENTITY_OWNERSHIP_UNCERTAIN=false',
+          'BUILD_UID=""',
+          'BUILD_GID=""',
+          'USER_STATE=absent',
+          'GROUP_STATE=absent',
+          'nss_entry_state() { if [[ "$1" == passwd && "$SCENARIO" == nss-error && "$USER_STATE" == present ]]; then return 3; fi; if [[ "$1" == passwd ]]; then printf "%s\\n" "$USER_STATE"; else printf "%s\\n" "$GROUP_STATE"; fi; }',
+          'getent() { if [[ "$1" == group ]]; then printf "nightdrop-build-test:x:4343:\\n"; elif [[ "$USER_STATE" == present ]]; then printf "nightdrop-build-test:x:4242:4343::/tmp/nightdrop-build-test-home:/bin/bash\\n"; elif [[ $# -eq 1 ]]; then printf "root:x:0:0:root:/root:/bin/bash\\n"; else return 2; fi; }',
+          'id() { case "$1" in -u) printf "4242\\n" ;; -gn|-Gn) printf "nightdrop-build-test\\n" ;; *) return 1 ;; esac; }',
+          'groupadd() { GROUP_STATE=present; }',
+          'useradd() { USER_STATE=present; return 1; }',
+          'pkill() { printf "pkill %s\\n" "$*" >> "$CLEANUP_LOG"; }',
+          'userdel() { printf "userdel %s\\n" "$*" >> "$CLEANUP_LOG"; USER_STATE=absent; }',
+          'groupdel() { printf "groupdel %s\\n" "$*" >> "$CLEANUP_LOG"; GROUP_STATE=absent; }',
+          'if create_builder_identity; then exit 90; fi',
+          '[[ "$BUILD_IDENTITY_OWNERSHIP_UNCERTAIN" == true && "$BUILD_USER_CREATED" == false ]]',
+          'if cleanup_builder_identity; then exit 91; fi'
+        ].join('; '),
+        'installer-builder-refusal',
+        installerPath,
+        scenario,
+        logPath
+      ], { encoding: 'utf8' });
+      assert.equal(result.status, 0, `${scenario}: ${result.stderr || result.stdout}`);
+      await assert.rejects(stat(logPath), { code: 'ENOENT' });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test('mailbox rollback verification detects byte and metadata drift', async () => {
+  const installerPath = fileURLToPath(new URL('../scripts/install-production.sh', import.meta.url));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-mailbox-metadata-'));
+  try {
+    const sourceDir = join(dir, 'source');
+    const destinationDir = join(dir, 'destination');
+    await mkdir(sourceDir);
+    await mkdir(destinationDir);
+    const source = join(sourceDir, 'nightdrop-mailbox');
+    const destination = join(destinationDir, 'nightdrop-mailbox');
+    await writeFile(source, 'trusted mailbox bytes\n', { mode: 0o640 });
+    const copied = spawnSync('/bin/cp', ['-a', source, destination], { encoding: 'utf8' });
+    assert.equal(copied.status, 0, copied.stderr);
+    const verify = (path: string): number | null => spawnSync('/bin/bash', [
+      '-c', 'source "$1"; verify_restored_file "$2" "$3"',
+      'installer-mailbox-metadata', installerPath, source, path
+    ], { encoding: 'utf8' }).status;
+    assert.equal(verify(destination), 0);
+    await chmod(destination, 0o600);
+    assert.notEqual(verify(destination), 0);
+    const restored = spawnSync('/bin/cp', ['-a', source, destination], { encoding: 'utf8' });
+    assert.equal(restored.status, 0, restored.stderr);
+    await writeFile(destination, 'tampered mailbox data\n');
+    await chmod(destination, 0o640);
+    const sourceMetadata = await stat(source);
+    await utimes(destination, sourceMetadata.atime, sourceMetadata.mtime);
+    assert.equal((await stat(destination)).size, sourceMetadata.size);
+    assert.notEqual(verify(destination), 0);
+    const installer = await readFile(installerPath, 'utf8');
+    assert.match(installer, /rsync -aAXnc --numeric-ids --itemize-changes/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('failed mailbox metadata verification retains rollback recovery state', async () => {
+  const installerPath = fileURLToPath(new URL('../scripts/install-production.sh', import.meta.url));
+  const dir = await mkdtemp(join(tmpdir(), 'nightdrop-mailbox-rollback-'));
+  try {
+    const rollbackRoot = join(dir, 'rollback');
+    const previous = join(rollbackRoot, 'nightdrop-mailbox');
+    const destination = join(dir, 'nightdrop-mailbox');
+    await mkdir(rollbackRoot);
+    await writeFile(previous, 'previous\n');
+    await writeFile(destination, 'candidate\n');
+    const result = spawnSync('/bin/bash', [
+      '-c',
+      [
+        'source "$1"',
+        'ROLLBACK_ROOT="$2"',
+        'PREVIOUS_MAILBOX_CLI="$3"',
+        'MAILBOX_CLI_PATH="$4"',
+        'MAILBOX_CLI_TOUCHED=true',
+        'MAILBOX_CLI_EXISTED=true',
+        'SERVICE_STOPPED=false',
+        'APP_TREE_SYNCED=false',
+        'UNIT_WRITTEN=false',
+        'CONFIG_TOUCHED=false',
+        'PROTECTED_METADATA_SNAPSHOTTED=false',
+        'UNIT_ENABLEMENT_TOUCHED=false',
+        'SERVICE_WAS_ACTIVE=false',
+        'verify_restored_file() { return 1; }',
+        'cleanup_builder() { return 0; }',
+        'if perform_deployment_rollback 1; then exit 90; fi'
+      ].join('; '),
+      'installer-mailbox-rollback', installerPath, rollbackRoot, previous, destination
+    ], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    await stat(rollbackRoot);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -1536,6 +1704,8 @@ test('production OAuth wrapper is root-protected and starts Nightdrop with a cle
   assert.match(wrapper, /"\$RUNUSER_BIN" -u "\$SERVICE_USER" -- "\$ENV_BIN" -i/);
   assert.match(wrapper, /readonly TRUSTED_PATH=/);
   assert.match(wrapper, /validate_trusted_path/);
+  assert.match(wrapper, /resolve_trusted_executable id/);
+  assert.match(wrapper, /\[\[ "\$current" == "\/" \]\] && break/);
   assert.match(wrapper, /resolve_trusted_executable node/);
   assert.match(wrapper, /resolve_trusted_executable runuser/);
   assert.match(wrapper, /resolve_trusted_executable env/);
@@ -1568,6 +1738,8 @@ test('production OAuth wrapper is root-protected and starts Nightdrop with a cle
   assert.doesNotMatch(installer, /chown -R "\$SERVICE_USER:\$SERVICE_GROUP" "\$INSTALL_DIR"/);
   assert.match(manualHelper, /if \[\[ ! -t 0 \|\| ! -t 1 \]\]/);
   assert.match(manualHelper, /resolve_trusted_executable pass/);
+  assert.match(manualHelper, /resolve_trusted_executable id/);
+  assert.match(manualHelper, /\[\[ "\$current" == "\/" \]\] && break/);
   assert.match(manualHelper, /resolve_trusted_executable timeout/);
   assert.match(manualHelper, /resolve_trusted_executable runuser/);
   assert.match(manualHelper, /resolve_trusted_executable env/);

@@ -31,30 +31,33 @@ USAGE
 }
 
 validate_trusted_path() {
-  local directory owner mode permissions
+  local directory canonical
   local -a directories=()
   IFS=':' read -r -a directories <<< "$TRUSTED_PATH"
   for directory in "${directories[@]}"; do
     [[ -d "$directory" ]] || continue
-    read -r owner mode < <(/usr/bin/stat -Lc '%U %a' -- "$directory")
-    permissions=$((8#$mode))
-    if [[ "$owner" != "root" ]] || (( (permissions & 8#022) != 0 )); then
-      echo "Refusing untrusted executable path directory: $directory" >&2
+    canonical="$(/usr/bin/readlink -e -- "$directory")" || return 1
+    [[ -d "$canonical" ]] || return 1
+    assert_trusted_ancestor_chain "$canonical" || {
+      echo "Refusing untrusted executable path directory or ancestor: $directory" >&2
       return 1
-    fi
+    }
   done
 }
 
 assert_trusted_ancestor_chain() {
-  local current="$1" owner mode permissions
-  while [[ "$current" != "/" ]]; do
-    read -r owner mode < <(/usr/bin/stat -Lc '%U %a' -- "$current")
+  local current="$1" owner mode permissions parent
+  while true; do
+    read -r owner mode < <(/usr/bin/stat -Lc '%U %a' -- "$current") || return 1
     permissions=$((8#$mode))
     if [[ "$owner" != "root" ]] || (( (permissions & 8#022) != 0 )); then
       echo "Refusing non-root-owned or writable privileged path: $current" >&2
       return 1
     fi
-    current="$(/usr/bin/dirname -- "$current")"
+    [[ "$current" == "/" ]] && break
+    parent="$(/usr/bin/dirname -- "$current")" || return 1
+    [[ "$parent" != "$current" ]] || return 1
+    current="$parent"
   done
 }
 

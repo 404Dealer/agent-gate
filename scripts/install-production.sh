@@ -568,21 +568,24 @@ acquire_install_lock() {
 }
 
 resolve_trusted_executable() {
-  local name="$1" resolved canonical current owner mode permissions
+  local name="$1" resolved canonical current owner mode permissions parent
   resolved="$(command -v -- "$name" || true)"
   [[ -n "$resolved" ]] || return 1
-  canonical="$(/usr/bin/readlink -f -- "$resolved")"
+  canonical="$(/usr/bin/readlink -e -- "$resolved")" || return 1
   [[ -f "$canonical" && -x "$canonical" ]] || return 1
 
   current="$canonical"
-  while [[ "$current" != "/" ]]; do
-    read -r owner mode < <(/usr/bin/stat -Lc '%U %a' -- "$current")
+  while true; do
+    read -r owner mode < <(/usr/bin/stat -Lc '%U %a' -- "$current") || return 1
     permissions=$((8#$mode))
     if [[ "$owner" != "root" ]] || (( (permissions & 8#022) != 0 )); then
       echo "Refusing untrusted executable or ancestor: $current" >&2
       return 1
     fi
-    current="$(/usr/bin/dirname -- "$current")"
+    [[ "$current" == "/" ]] && break
+    parent="$(/usr/bin/dirname -- "$current")" || return 1
+    [[ "$parent" != "$current" ]] || return 1
+    current="$parent"
   done
   printf '%s\n' "$canonical"
 }
@@ -648,6 +651,16 @@ restore_application_tree() {
   verification="$(rsync -n --itemize-changes "${restore_args[@]}" \
     "$snapshot"/ "$INSTALL_DIR"/)" || return 1
   [[ -z "$verification" ]] || return 1
+}
+
+verify_restored_file() {
+  local source="$1" destination="$2" destination_dir verification
+  [[ -f "$source" && ! -L "$source" && -f "$destination" && ! -L "$destination" ]] || return 1
+  [[ "${source##*/}" == "${destination##*/}" ]] || return 1
+  destination_dir="$(/usr/bin/dirname -- "$destination")" || return 1
+  verification="$(rsync -aAXnc --numeric-ids --itemize-changes -- \
+    "$source" "$destination_dir"/)" || return 1
+  [[ -z "$verification" ]]
 }
 
 wait_for_service_ready() {
@@ -744,33 +757,86 @@ restore_protected_metadata() {
   [[ "$restore_failed" == false ]]
 }
 
+validate_current_builder_group() {
+  local expected_primary_user="$1" state record name password gid members
+  local all_groups group_record group_name group_gid name_matches=0 gid_matches=0
+  local all_passwd passwd_record passwd_name passwd_gid primary_matches=0
+  state="$(nss_entry_state group "$BUILD_GROUP")" || return 1
+  [[ "$state" == "present" ]] || return 1
+  record="$(getent group "$BUILD_GROUP")" || return 1
+  IFS=: read -r name password gid members <<< "$record"
+  [[ "$name" == "$BUILD_GROUP" && "$password" == "x" && "$gid" =~ ^[1-9][0-9]*$ && -z "$members" ]] || return 1
+  [[ -z "${BUILD_GID:-}" || "$gid" == "$BUILD_GID" ]] || return 1
+
+  all_groups="$(getent group)" || return 1
+  while IFS= read -r group_record; do
+    IFS=: read -r group_name _ group_gid _ <<< "$group_record"
+    [[ "$group_name" != "$BUILD_GROUP" ]] || name_matches=$((name_matches + 1))
+    [[ "$group_gid" != "$gid" ]] || gid_matches=$((gid_matches + 1))
+  done <<< "$all_groups"
+  (( name_matches == 1 && gid_matches == 1 )) || return 1
+
+  all_passwd="$(getent passwd)" || return 1
+  while IFS= read -r passwd_record; do
+    IFS=: read -r passwd_name _ _ passwd_gid _ <<< "$passwd_record"
+    if [[ "$passwd_gid" == "$gid" ]]; then
+      primary_matches=$((primary_matches + 1))
+      [[ "$expected_primary_user" == present && "$passwd_name" == "$BUILD_USER" ]] || return 1
+    fi
+  done <<< "$all_passwd"
+  if [[ "$expected_primary_user" == present ]]; then
+    (( primary_matches == 1 )) || return 1
+  else
+    (( primary_matches == 0 )) || return 1
+  fi
+  VERIFIED_BUILD_GID="$gid"
+}
+
+validate_current_builder_user() {
+  local state record name password uid gid _gecos home shell
+  local all_passwd passwd_record passwd_name passwd_uid uid_matches=0 current_uid primary_group effective_groups
+  validate_current_builder_group present || return 1
+  state="$(nss_entry_state passwd "$BUILD_USER")" || return 1
+  [[ "$state" == "present" ]] || return 1
+  record="$(getent passwd "$BUILD_USER")" || return 1
+  IFS=: read -r name password uid gid _gecos home shell <<< "$record"
+  [[ "$name" == "$BUILD_USER" && "$password" == "x" && "$uid" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ "$gid" == "$VERIFIED_BUILD_GID" && "$home" == "$BUILD_HOME" && "$shell" == "/usr/sbin/nologin" ]] || return 1
+  [[ -z "${BUILD_UID:-}" || "$uid" == "$BUILD_UID" ]] || return 1
+
+  all_passwd="$(getent passwd)" || return 1
+  while IFS= read -r passwd_record; do
+    IFS=: read -r passwd_name _ passwd_uid _ <<< "$passwd_record"
+    if [[ "$passwd_uid" == "$uid" ]]; then
+      uid_matches=$((uid_matches + 1))
+      [[ "$passwd_name" == "$BUILD_USER" ]] || return 1
+    fi
+  done <<< "$all_passwd"
+  (( uid_matches == 1 )) || return 1
+  current_uid="$(id -u -- "$BUILD_USER")" || return 1
+  primary_group="$(id -gn -- "$BUILD_USER")" || return 1
+  effective_groups="$(id -Gn -- "$BUILD_USER")" || return 1
+  [[ "$current_uid" == "$uid" && "$primary_group" == "$BUILD_GROUP" && "$effective_groups" == "$BUILD_GROUP" ]] || return 1
+  VERIFIED_BUILD_UID="$uid"
+}
+
 capture_attempted_builder_group() {
-  local state record name password gid members all_passwd passwd_record passwd_gid
+  local state
   state="$(nss_entry_state group "$BUILD_GROUP")" || return 1
   [[ "$state" == "present" || "$state" == "absent" ]] || return 1
   [[ "$state" == "present" ]] || return 0
-  record="$(getent group "$BUILD_GROUP")" || return 1
-  IFS=: read -r name password gid members <<< "$record"
-  [[ "$name" == "$BUILD_GROUP" && "$gid" =~ ^[1-9][0-9]*$ && -z "$members" ]] || return 1
-  all_passwd="$(getent passwd)" || return 1
-  while IFS= read -r passwd_record; do
-    IFS=: read -r _ _ _ passwd_gid _ <<< "$passwd_record"
-    [[ "$passwd_gid" != "$gid" ]] || return 1
-  done <<< "$all_passwd"
+  validate_current_builder_group absent || return 1
+  BUILD_GID="$VERIFIED_BUILD_GID"
   BUILD_GROUP_CREATED=true
 }
 
 capture_attempted_builder_user() {
-  local state record name password uid gid remainder group_record expected_gid
+  local state
   state="$(nss_entry_state passwd "$BUILD_USER")" || return 1
   [[ "$state" == "present" || "$state" == "absent" ]] || return 1
   [[ "$state" == "present" ]] || return 0
-  record="$(getent passwd "$BUILD_USER")" || return 1
-  group_record="$(getent group "$BUILD_GROUP")" || return 1
-  IFS=: read -r name password uid gid remainder <<< "$record"
-  IFS=: read -r _ _ expected_gid _ <<< "$group_record"
-  [[ "$name" == "$BUILD_USER" && "$uid" =~ ^[1-9][0-9]*$ && "$gid" == "$expected_gid" ]] || return 1
-  BUILD_UID="$uid"
+  validate_current_builder_user || return 1
+  BUILD_UID="$VERIFIED_BUILD_UID"
   BUILD_USER_CREATED=true
 }
 
@@ -780,13 +846,21 @@ create_builder_identity() {
     echo "Transient build group creation failed; refusing deployment." >&2
     return 1
   fi
-  BUILD_GROUP_CREATED=true
+  if ! capture_attempted_builder_group || [[ "$BUILD_GROUP_CREATED" != true ]]; then
+    BUILD_IDENTITY_OWNERSHIP_UNCERTAIN=true
+    echo "Transient build group creation could not be proven; refusing deployment." >&2
+    return 1
+  fi
   if ! useradd -r -M -g "$BUILD_GROUP" -d "$BUILD_HOME" -s /usr/sbin/nologin "$BUILD_USER"; then
     capture_attempted_builder_user || BUILD_IDENTITY_OWNERSHIP_UNCERTAIN=true
     echo "Transient build user creation failed; refusing deployment." >&2
     return 1
   fi
-  BUILD_USER_CREATED=true
+  if ! capture_attempted_builder_user || [[ "$BUILD_USER_CREATED" != true ]]; then
+    BUILD_IDENTITY_OWNERSHIP_UNCERTAIN=true
+    echo "Transient build user creation could not be proven; refusing deployment." >&2
+    return 1
+  fi
 }
 
 stop_previous_service() {
@@ -797,37 +871,46 @@ stop_previous_service() {
 }
 
 cleanup_builder_identity() {
-  local cleanup_failed=false state
-  [[ "${BUILD_IDENTITY_OWNERSHIP_UNCERTAIN:-false}" == false ]] || cleanup_failed=true
+  local state
+  [[ "${BUILD_IDENTITY_OWNERSHIP_UNCERTAIN:-false}" == false ]] || return 1
+
   if [[ "${BUILD_USER_CREATED:-false}" == true ]]; then
-    [[ "${BUILD_UID:-}" =~ ^[1-9][0-9]*$ ]] || cleanup_failed=true
-    if [[ "${BUILD_UID:-}" =~ ^[1-9][0-9]*$ ]]; then
+    state="$(nss_entry_state passwd "$BUILD_USER")" || return 1
+    if [[ "$state" == "absent" ]]; then
+      BUILD_USER_CREATED=false
+      BUILD_UID=""
+    elif [[ "$state" == "present" ]]; then
+      validate_current_builder_user || return 1
+      [[ "$VERIFIED_BUILD_UID" == "$BUILD_UID" ]] || return 1
       pkill -KILL -u "$BUILD_UID" >/dev/null 2>&1 || true
-    fi
-    state="$(nss_entry_state passwd "$BUILD_USER")" || state=unknown
-    if [[ "$state" != "absent" ]]; then
-      userdel "$BUILD_USER" >/dev/null 2>&1 || cleanup_failed=true
-    fi
-    if nss_entry_is_absent passwd "$BUILD_USER"; then
+      userdel "$BUILD_USER" >/dev/null 2>&1 || return 1
+      state="$(nss_entry_state passwd "$BUILD_USER")" || return 1
+      [[ "$state" == "absent" ]] || return 1
       BUILD_USER_CREATED=false
       BUILD_UID=""
     else
-      cleanup_failed=true
+      return 1
     fi
   fi
 
+  [[ "${BUILD_USER_CREATED:-false}" == false ]] || return 1
   if [[ "${BUILD_GROUP_CREATED:-false}" == true ]]; then
-    state="$(nss_entry_state group "$BUILD_GROUP")" || state=unknown
-    if [[ "$state" != "absent" ]]; then
-      groupdel "$BUILD_GROUP" >/dev/null 2>&1 || cleanup_failed=true
-    fi
-    if nss_entry_is_absent group "$BUILD_GROUP"; then
+    state="$(nss_entry_state group "$BUILD_GROUP")" || return 1
+    if [[ "$state" == "absent" ]]; then
       BUILD_GROUP_CREATED=false
+      BUILD_GID=""
+    elif [[ "$state" == "present" ]]; then
+      validate_current_builder_group absent || return 1
+      [[ "$VERIFIED_BUILD_GID" == "$BUILD_GID" ]] || return 1
+      groupdel "$BUILD_GROUP" >/dev/null 2>&1 || return 1
+      state="$(nss_entry_state group "$BUILD_GROUP")" || return 1
+      [[ "$state" == "absent" ]] || return 1
+      BUILD_GROUP_CREATED=false
+      BUILD_GID=""
     else
-      cleanup_failed=true
+      return 1
     fi
   fi
-  [[ "$cleanup_failed" == false ]]
 }
 
 cleanup_builder() {
@@ -895,7 +978,11 @@ perform_deployment_rollback() {
     if [[ "$MAILBOX_CLI_TOUCHED" == true ]]; then
       if [[ "$MAILBOX_CLI_EXISTED" == true && -n "$PREVIOUS_MAILBOX_CLI" && -f "$PREVIOUS_MAILBOX_CLI" ]]; then
         rm -f -- "$MAILBOX_CLI_PATH" || rollback_failed=true
-        cp -a "$PREVIOUS_MAILBOX_CLI" "$MAILBOX_CLI_PATH" || rollback_failed=true
+        if cp -a "$PREVIOUS_MAILBOX_CLI" "$MAILBOX_CLI_PATH"; then
+          verify_restored_file "$PREVIOUS_MAILBOX_CLI" "$MAILBOX_CLI_PATH" || rollback_failed=true
+        else
+          rollback_failed=true
+        fi
       else
         rm -f -- "$MAILBOX_CLI_PATH" || rollback_failed=true
       fi
@@ -1035,6 +1122,9 @@ BUILD_GROUP="$BUILD_USER"
 BUILD_GROUP_CREATED=false
 BUILD_IDENTITY_OWNERSHIP_UNCERTAIN=false
 BUILD_UID=""
+BUILD_GID=""
+VERIFIED_BUILD_UID=""
+VERIFIED_BUILD_GID=""
 BUILD_HOME=""
 BUILD_ROOT=""
 ROLLBACK_ROOT=""
@@ -1142,6 +1232,10 @@ if [[ -f "$MAILBOX_CLI_PATH" ]]; then
   MAILBOX_CLI_EXISTED=true
   PREVIOUS_MAILBOX_CLI="$ROLLBACK_ROOT/nightdrop-mailbox"
   cp -a "$MAILBOX_CLI_PATH" "$PREVIOUS_MAILBOX_CLI"
+  verify_restored_file "$MAILBOX_CLI_PATH" "$PREVIOUS_MAILBOX_CLI" || {
+    echo "Could not verify the mailbox client rollback snapshot." >&2
+    exit 1
+  }
 fi
 PREVIOUS_DIST="$ROLLBACK_ROOT/previous-dist"
 PREVIOUS_MODULES="$ROLLBACK_ROOT/previous-node-modules"
