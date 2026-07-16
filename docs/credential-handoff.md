@@ -2,6 +2,8 @@
 
 This guide describes the recommended operator flow when Hermes Agent installs and uses Nightdrop, but must **not** receive Gmail, Zoho, Outlook, SMTP, or approval-bot send credentials.
 
+Keeping secrets out of chat, model context, command arguments, and agent-driven terminals is valuable in every profile. It is a hard OS credential boundary only when Hermes also lacks administrative control over the Nightdrop host or runs in a separate trust domain. Standard mode with an acknowledged privileged agent does not make that stronger claim.
+
 ## Goal
 
 Hermes should be able to:
@@ -11,7 +13,7 @@ Hermes should be able to:
 - write outbound drafts to the write-only inbox;
 - check service health and logs if allowed.
 
-Hermes should **not** be able to:
+In strict or properly isolated deployments, Hermes should **not** be able to:
 
 - read provider send credentials;
 - read the Nightdrop approval bot token;
@@ -27,7 +29,7 @@ The human operator is responsible for the few actions that intentionally cross t
 |----------------|------------------------------|
 | Create the separate Nightdrop Telegram bot | The bot token controls approvals; Hermes must not be able to approve its own drafts |
 | Authorize provider send scopes | Gmail/Zoho/Outlook send scopes are the actual send capability |
-| Store provider secrets under the `nightdrop` user | Keeps send credentials outside the Hermes OS user and logs |
+| Store provider secrets under the `nightdrop` user | Keeps send credentials outside ordinary Hermes process access and logs; strict/isolated deployment is required to resist host administration |
 | Verify the configured sender address | Approval previews are only meaningful if the real configured sender is correct |
 | Approve or deny every outbound payload | Human approval is the control point |
 | Keep recovery access outside Hermes | If Hermes breaks or is compromised, the operator still controls the gate |
@@ -43,8 +45,11 @@ Hermes may run or prepare commands that create the non-secret infrastructure:
 ```bash
 sudo scripts/install-production.sh \
   --agent-user spacex \
+  --deployment-profile standard \
   --telegram-user-id 2061243435
 ```
+
+If the installer reports host-administration indicators, add `--acknowledge-agent-host-admin-risk` only after accepting that this mode keeps secrets out of normal Hermes workflows but not beyond Hermes's technical host authority.
 
 This creates users, groups, directories, permissions, a systemd service, and a config skeleton. It is okay for Hermes to assist with this because no send credentials need to be entered into Hermes.
 
@@ -104,7 +109,7 @@ Do **not** treat this as equivalent:
 Hermes receives secret -> Hermes stores it -> Hermes deletes it
 ```
 
-Deletion is cleanup, not isolation. Once Hermes receives a secret, it may already exist in chat history, session logs, model context, terminal output, shell history, crash logs, or backups. If the goal is a hard send boundary, Hermes should never receive the send credential in the first place.
+Deletion is cleanup, not isolation. Once Hermes receives a secret, it may already exist in chat history, session logs, model context, terminal output, shell history, crash logs, or backups. If the goal is a hard send boundary, Hermes should never receive the send credential and must not have administrative access capable of retrieving it later.
 
 ## Why Not Enter Secrets in the Approval Bot?
 
@@ -139,7 +144,7 @@ The SMTP helper stores one versioned key matching:
 nightdrop/smtp-password-<transaction>
 ```
 
-The App Password belongs only to `nightdrop`. It must never be copied to Hermes and should be revoked from Google Account when no longer needed. See [smtp-onboarding.md](smtp-onboarding.md).
+The App Password is stored only under `nightdrop`. It must never be copied to Hermes and should be revoked from Google Account when no longer needed. In acknowledged privileged standard mode, this is workflow separation rather than a hard host boundary. See [smtp-onboarding.md](smtp-onboarding.md).
 
 Required Gmail OAuth data scope plus basic sender identity scopes:
 
@@ -233,8 +238,8 @@ Those expose secrets to shell history, process inspection, logs, or the Hermes t
 After setup, these should be true:
 
 ```text
-Hermes user can write to /opt/nightdrop/drafts/inbox
-Hermes user cannot list/read /opt/nightdrop/drafts/inbox
+Hermes user can create a known file in /opt/nightdrop/drafts/inbox
+Hermes user cannot enumerate the inbox or access service-claimed pending state
 Hermes user cannot read /opt/nightdrop/config/config.yaml
 Hermes user cannot read /home/nightdrop/.password-store
 Hermes user cannot read the Nightdrop Telegram bot token

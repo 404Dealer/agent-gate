@@ -1,10 +1,36 @@
 import chokidar, { type FSWatcher } from 'chokidar';
 import { EventEmitter } from 'node:events';
-import { lstat, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, mkdir, open, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, resolve } from 'node:path';
 import { DraftSchema, updateStatus, type Draft } from './schema.js';
 
 const MAX_DRAFT_SIZE_BYTES = 512 * 1024;
+
+interface FileIdentity {
+  dev: number;
+  ino: number;
+}
+
+async function writePrivateExclusive(path: string, content: string): Promise<void> {
+  const target = await open(path, 'wx', 0o600);
+  try {
+    await target.writeFile(content, 'utf8');
+    await target.sync();
+  } catch (error) {
+    await target.close().catch(() => {});
+    await rm(path, { force: true }).catch(() => {});
+    throw error;
+  }
+  await target.close();
+}
+
+async function unlinkIfSameEntry(path: string, expected: FileIdentity): Promise<void> {
+  const current = await lstat(path).catch(() => null);
+  if (current?.dev === expected.dev && current.ino === expected.ino) {
+    await unlink(path);
+  }
+}
 
 export interface DraftEvent {
   draft: Draft;
@@ -118,9 +144,11 @@ export class DraftWatcher extends EventEmitter {
 
   private async handleNewFile(inboxPath: string): Promise<void> {
     const pendingPath = resolve(this.pendingDir, basename(inboxPath));
+    let sourceIdentity: FileIdentity | null = null;
 
     try {
       const entry = await lstat(inboxPath);
+      sourceIdentity = { dev: entry.dev, ino: entry.ino };
       if (!entry.isFile()) {
         throw new Error('Invalid draft file type: only regular files are allowed');
       }
@@ -128,11 +156,24 @@ export class DraftWatcher extends EventEmitter {
         throw new Error(`Draft file too large: ${entry.size} bytes (max ${MAX_DRAFT_SIZE_BYTES})`);
       }
 
-      await rename(inboxPath, pendingPath);
-
-      const raw = await readFile(pendingPath, 'utf8');
+      const source = await open(inboxPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      let raw: string;
+      try {
+        const opened = await source.stat();
+        if (!opened.isFile() || opened.dev !== entry.dev || opened.ino !== entry.ino) {
+          throw new Error('Draft changed before it could be claimed');
+        }
+        raw = await source.readFile('utf8');
+      } finally {
+        await source.close();
+      }
+      if (Buffer.byteLength(raw, 'utf8') > MAX_DRAFT_SIZE_BYTES) {
+        throw new Error(`Draft file too large: captured content exceeds ${MAX_DRAFT_SIZE_BYTES} bytes`);
+      }
       const parsed = JSON.parse(raw);
       const draft = DraftSchema.parse(parsed);
+      await writePrivateExclusive(pendingPath, raw);
+      await unlinkIfSameEntry(inboxPath, sourceIdentity);
       this.emit('draft', { draft, filePath: pendingPath } satisfies DraftEvent);
     } catch (error) {
       const failedPath = resolve(this.options.rootDir, 'failed', basename(inboxPath));
@@ -142,11 +183,8 @@ export class DraftWatcher extends EventEmitter {
         failedAt: new Date().toISOString()
       };
       await mkdir(dirname(failedPath), { recursive: true });
-      await rename(pendingPath, failedPath)
-        .catch(async () => rename(inboxPath, failedPath))
-        .catch(async () => {
-          await writeFile(failedPath, JSON.stringify(payload, null, 2), 'utf8');
-        });
+      if (sourceIdentity) await unlinkIfSameEntry(inboxPath, sourceIdentity).catch(() => {});
+      await writePrivateExclusive(failedPath, JSON.stringify(payload, null, 2)).catch(() => {});
       this.emit('malformed', { filePath: pendingPath, failedPath, error: payload.error });
     }
   }

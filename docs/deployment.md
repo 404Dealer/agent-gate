@@ -1,12 +1,22 @@
 # Production Deployment Guide
 
-This guide walks through deploying Nightdrop with full process isolation. By the end, your AI agent will only be able to drop drafts into a write-only inbox — it cannot read, modify, or delete anything after submission.
+This guide covers adoption-friendly standard deployment, strict same-host isolation, and optional isolated topology. In every mode, the installer verifies that ordinary agent access can create an inbox entry but cannot enumerate the inbox or access service-claimed private state. A submitting agent controls its own known inbox inode only until Nightdrop captures a bounded snapshot into a new exclusive `0600` service-owned `pending/` inode; retained hard links cannot modify that claimed copy.
 
 ## Overview
 
 Production deployment has one goal: the agent can submit drafts, but cannot approve, alter, inspect, or send them.
 
-### Minimum Production Requirements
+## Choose a Deployment Profile
+
+| Profile | Agent account | Installer behavior | Guarantee |
+|---------|---------------|--------------------|-----------|
+| **Standard** (default) | Existing non-root account; unrelated supplementary groups allowed | Verifies the real write-only/private-state access boundary. Host-admin indicators require `--acknowledge-agent-host-admin-risk`. | Deterministic approval and normal Unix isolation. An acknowledged host-admin-capable agent can bypass same-host credential permissions. |
+| **Strict** | Dedicated account with a same-named private primary group | Allows only the primary group plus `nightdrop-inbox` and `nightdrop-mailbox`; rejects privilege indicators. | Hard same-host agent/service boundary under the documented OS, credential, and approval assumptions. |
+| **Isolated** | Agent cannot administer Nightdrop's trust domain | Deploy Nightdrop in a VM/container runtime or host that the agent cannot administer, and expose only a fixed submission/broker transport. | Strongest isolation; optional and requires an operator-supplied transport because this installer configures local paths and Unix sockets. |
+
+The isolated profile is not required for ordinary Nightdrop use. It is an advanced option when the agent must retain unrestricted administration of its own host while Nightdrop credentials must remain outside that host's trust domain. A container controlled by an agent with administrative access to the same container host does **not** qualify as isolated.
+
+### Requirements in every production profile
 
 - Separate Unix service user for Nightdrop, for example `nightdrop`.
 - Dedicated inbox group, for example `nightdrop-inbox`.
@@ -14,11 +24,13 @@ Production deployment has one goal: the agent can submit drafts, but cannot appr
 - Internal state directories (`pending`, `approved`, `sent`, `denied`, `failed`) mode `0700`, owned by `nightdrop:nightdrop`.
 - Provider send credentials readable only by `nightdrop`.
 - Telegram approval bot token readable only by `nightdrop`.
-- Agent/Hermes runs as a dedicated, non-sudo account with a unique nonzero UID, a same-named private primary group, and no supplementary groups except `nightdrop-inbox` and `nightdrop-mailbox`. Accounts in `sudo`, `wheel`, `docker`, `lxd`, or any other supplementary group are rejected.
+- Agent/Hermes runs as a distinct non-root account with a stable unique nonzero UID and is never a member of the private `nightdrop` primary group.
 - Trusted `getfacl` and `setfacl` executables are installed; both the default audit denial and an explicit read grant must be verifiable.
 - `security.enforceProductionPermissions: true` in config.
 
-If any of these are skipped, Nightdrop may still work, but it is no longer enforcing the full structural boundary.
+Strict mode additionally requires a same-named private primary group and no supplementary groups except `nightdrop-inbox` and `nightdrop-mailbox`. Standard mode allows unrelated groups but requires explicit acknowledgment when effective probes detect broad noninteractive root `sudo`, passwordless root `doas`, or write access to known root-owned administration sockets or paths. Group names alone are not proof of privilege. A negative probe does not attest that custom policy, credentials, capabilities, or unknown escalation paths are absent.
+
+If any universal requirement is skipped, Nightdrop may still work, but it is no longer enforcing the documented production boundary. In standard mode, acknowledging a privileged agent intentionally narrows the claim to deterministic approval and normal, non-elevated filesystem behavior.
 
 | Component | Runs As | Can Do | Must Not Be Able To Do |
 |-----------|---------|--------|-------------------------|
@@ -28,7 +40,7 @@ If any of these are skipped, Nightdrop may still work, but it is no longer enfor
 
 ## Phase 1 — Install Managed Service Identities and Runtime
 
-Do **not** pre-create the `nightdrop` user, `nightdrop` primary group, `nightdrop-inbox` group, `nightdrop-mailbox` group, or `/home/nightdrop` before an automated install. The selected agent account must already be a dedicated unprivileged account whose only group is its same-named private primary group; the installer adds only the two Nightdrop capability groups.
+Do **not** pre-create the `nightdrop` user, `nightdrop` primary group, `nightdrop-inbox` group, `nightdrop-mailbox` group, or `/home/nightdrop` before an automated install. The selected agent account must already exist. The installer creates the service identities and adds the two Nightdrop capability groups.
 
 Never execute the privileged installer from a checkout writable by the agent. Stage the reviewed source beneath a root-owned, non-group/world-writable ancestor, then run that immutable copy:
 
@@ -44,6 +56,25 @@ sudo /root/nightdrop-source/scripts/install-production.sh \
   --telegram-user-id YOUR_TELEGRAM_USER_ID
 ```
 
+If standard mode detects host-administration capability, review the warning. Proceed only when the reduced same-host guarantee is acceptable:
+
+```bash
+sudo /root/nightdrop-source/scripts/install-production.sh \
+  --agent-user your-user \
+  --deployment-profile standard \
+  --acknowledge-agent-host-admin-risk \
+  --telegram-user-id YOUR_TELEGRAM_USER_ID
+```
+
+For strict mode, first select a dedicated unprivileged agent account, then run:
+
+```bash
+sudo /root/nightdrop-source/scripts/install-production.sh \
+  --agent-user nightdrop-agent \
+  --deployment-profile strict \
+  --telegram-user-id YOUR_TELEGRAM_USER_ID
+```
+
 The installer records managed identity ownership in a root-owned `0600` marker at `/etc/nightdrop/managed-identities-v1`. On upgrades, it accepts existing Nightdrop identities only when that marker is valid; the service account is a locked system account with a unique system UID, home `/home/nightdrop`, and shell `/usr/sbin/nologin`; its unique primary system group is exactly `nightdrop`; its only effective groups are `nightdrop`, `nightdrop-inbox`, and `nightdrop-mailbox`; the private home is a non-symlink `nightdrop:nightdrop` directory with mode `0700` beneath a root-owned, non-group/world-writable `/home` ancestor that grants other-execute traversal; capability GIDs are unique and are not any user's primary GID; and capability-group members are exactly `nightdrop` plus the selected agent user. Partial or unmanaged target-name/home collisions fail before any group membership is changed.
 
 Production installs are serialized by a root-owned lock at `/run/nightdrop-install.lock`. NSS passwd/group enumeration must succeed, and keyed lookups accept only `getent` status `2` as absence; all other lookup failures abort before mutation. During a fresh install, failure at any identity, membership, home, validation, or marker step triggers bounded rollback of the target user, groups, memberships, home, and marker paths. If the operating system refuses any cleanup operation, the installer reports an incomplete rollback and refuses the next run's partial identity collision rather than silently adopting it.
@@ -55,6 +86,8 @@ Production installs are serialized by a root-owned lock at `/run/nightdrop-insta
 The installer stops an already-active service during upgrades, installs lockfile dependencies with root lifecycle scripts disabled, compiles in a staged tree as a one-use unprivileged build account, and swaps in the verified output. The transient user and same-named group are both preflighted, ownership-tracked, removed, and verified absent before deployment continues. It retains the previous runtime, config, systemd unit and enablement, mailbox client, and protected path ownership/modes/ACLs until the upgraded service passes an active-state health check. Any later failure attempts every restore step; the rollback snapshot is deleted only after complete restoration and is retained with an explicit error if any restore operation fails. The persistent `nightdrop` service account never owns source or privileged helpers.
 
 The only application-tree paths writable by `nightdrop` are the dedicated config directory, draft state, and audit log. OAuth setup needs the config directory—not the application root—to be writable so it can atomically replace `config.yaml`.
+
+After applying ownership, modes, and the optional audit ACL, the installer runs a controlled access probe as the selected agent. It must create and remove one randomized inbox probe file, traverse but not list the inbox, fail to read or write config/private queues, fail to read the service home, and fail to write the audit log. Audit read access must exactly match `--grant-agent-audit-read`. This proves ordinary access behavior; it does not claim to contain an acknowledged root-equivalent agent.
 
 ### Permission Summary
 
@@ -297,32 +330,18 @@ sudo systemctl status nightdrop --no-pager
 sudo journalctl -u nightdrop -f
 ```
 
-With `security.enforceProductionPermissions: true`, startup fails closed if the draft directories do not match the production isolation model. A healthy startup logs:
+With `security.enforceProductionPermissions: true`, startup validates queue path types, required modes, service UID/GID ownership, and the root-owned draft parent. This is a runtime filesystem check, not an attestation that every host-administration path is absent. A healthy startup logs:
 
 ```text
 ✅ Draft directory isolation checks passed.
 ```
 
-## Phase 6 — Restrict Your Agent's sudo (Optional)
+## Phase 6 — Apply the Selected Host-Administration Policy
 
-If your agent's user currently has broad sudo access, lock it down to only what it needs:
+- **Standard:** the existing agent account may retain administrative access after the explicit acknowledgment. Treat Nightdrop as deterministic review and routine credential separation, not a hard boundary against that agent.
+- **Strict:** the dedicated agent account must have no `sudo`, `doas`, polkit, container/hypervisor control, privileged capability, or equivalent administration path. Perform installation, onboarding, status checks, and recovery from a separate operator-controlled terminal/account.
 
-```bash
-sudo visudo -f /etc/sudoers.d/your-user
-```
-
-```sudoers
-# Only allow checking Nightdrop status and viewing logs
-Defaults:your-user env_reset,use_pty
-Cmnd_Alias SAFE_OPS = /usr/bin/systemctl status nightdrop.service, \
-                       /usr/bin/journalctl -u nightdrop.service, \
-                       /usr/bin/journalctl -u nightdrop.service -n *, \
-                       /usr/bin/journalctl -u nightdrop.service -f
-
-your-user ALL=(root) NOPASSWD: SAFE_OPS
-```
-
-Then remove any existing file granting `ALL=(ALL) ALL`.
+Do not copy wildcard `sudoers` examples for `journalctl`, `systemctl`, shells, editors, or package tools into a strict deployment. Their option and subprocess surfaces are difficult to bound and can recreate a root-equivalent path. A mode transition is an explicit operator change, not something the installer silently repairs.
 
 ## Dropping Drafts From Your Agent
 
@@ -339,7 +358,7 @@ sg nightdrop-inbox -c 'cat > /opt/nightdrop/drafts/inbox/my-draft.json << EOF
 EOF'
 ```
 
-The file lands in the dropbox. Nightdrop picks it up, moves it to `pending/`, and sends you a Telegram preview. Your agent never sees it again.
+The file lands in the dropbox. Nightdrop captures a bounded snapshot into a new exclusive `0600` service-owned inode under `pending/`, removes the unchanged inbox entry, and sends you a Telegram preview. The agent cannot access the claimed copy through the documented capability, even if it retained a hard link to its original inode.
 
 ## Verifying Isolation
 

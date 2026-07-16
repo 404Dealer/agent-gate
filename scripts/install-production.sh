@@ -12,6 +12,9 @@ AGENT_USER="${SUDO_USER:-${USER:-}}"
 TELEGRAM_USER_ID=""
 INSTALL_DIR="/opt/nightdrop"
 GRANT_AGENT_AUDIT_READ=false
+DEPLOYMENT_PROFILE="standard"
+ACKNOWLEDGE_AGENT_HOST_ADMIN_RISK=false
+AGENT_PRIVILEGE_RISK_DETAILS=""
 SERVICE_USER="nightdrop"
 SERVICE_HOME="/home/$SERVICE_USER"
 INBOX_GROUP="nightdrop-inbox"
@@ -27,7 +30,9 @@ AGENT_UID_SNAPSHOT=""
 
 usage() {
   /usr/bin/cat <<USAGE
-Usage: sudo $0 --telegram-user-id ID [--agent-user USER] [--install-dir /opt/nightdrop] [--grant-agent-audit-read]
+Usage: sudo $0 --telegram-user-id ID [--agent-user USER] [--deployment-profile standard|strict]
+             [--acknowledge-agent-host-admin-risk] [--install-dir /opt/nightdrop]
+             [--grant-agent-audit-read]
 
 Creates:
   - service user:        $SERVICE_USER
@@ -40,6 +45,15 @@ Creates:
 Agent access to audit.log is denied by default. Pass --grant-agent-audit-read
 only when the operator explicitly accepts exposing audit metadata to $AGENT_USER.
 
+Agent isolation modes:
+  standard  Allows unrelated supplementary groups, but never the private
+            Nightdrop service group. Root-equivalent capability indicators
+            require --acknowledge-agent-host-admin-risk and reduce the same-host
+            structural guarantee. This is the default.
+  strict    Requires a dedicated agent account whose only groups are its
+            same-named primary group and the two Nightdrop capability groups.
+            Privileged capability indicators are always rejected.
+
 Secrets are left as \${PASS:...} placeholders in config/config.yaml; add them to
 the Nightdrop service account's pass store before starting the service for a real provider.
 USAGE
@@ -47,6 +61,10 @@ USAGE
 
 validate_agent_user() {
   [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]
+}
+
+validate_deployment_profile() {
+  [[ "$1" == standard || "$1" == strict ]]
 }
 
 validate_agent_identity() {
@@ -258,24 +276,40 @@ validate_numeric_identity_graph() {
 
 validate_agent_group_boundary() {
   local agent_groups="$1" agent_primary_group="$2" agent_user="$3" inbox_group="$4" mailbox_group="$5" require_capabilities="$6"
+  local isolation_mode="${7:-strict}"
   local group saw_primary=false saw_inbox=false saw_mailbox=false group_count=0
-  [[ "$agent_primary_group" == "$agent_user" ]] || return 1
+  [[ "$require_capabilities" == true || "$require_capabilities" == false ]] || return 1
+  [[ "$isolation_mode" == standard || "$isolation_mode" == strict ]] || return 1
+  [[ -n "$agent_primary_group" ]] || return 1
+  [[ "$agent_primary_group" != "$SERVICE_USER" && "$agent_primary_group" != "$inbox_group" && "$agent_primary_group" != "$mailbox_group" ]] || return 1
+  if [[ "$isolation_mode" == strict ]]; then
+    [[ "$agent_primary_group" == "$agent_user" ]] || return 1
+  fi
   for group in $agent_groups; do
     group_count=$((group_count + 1))
-    if [[ "$group" == "$agent_primary_group" ]]; then [[ "$saw_primary" == false ]] || return 1; saw_primary=true
+    if [[ "$group" == "$SERVICE_USER" ]]; then return 1
+    elif [[ "$group" == "$agent_primary_group" ]]; then [[ "$saw_primary" == false ]] || return 1; saw_primary=true
     elif [[ "$group" == "$inbox_group" ]]; then [[ "$saw_inbox" == false ]] || return 1; saw_inbox=true
     elif [[ "$group" == "$mailbox_group" ]]; then [[ "$saw_mailbox" == false ]] || return 1; saw_mailbox=true
-    else return 1
+    elif [[ "$isolation_mode" == strict ]]; then return 1
     fi
   done
   [[ "$saw_primary" == true ]] || return 1
   if [[ "$require_capabilities" == true ]]; then
-    [[ "$group_count" -eq 3 && "$saw_inbox" == true && "$saw_mailbox" == true ]] || return 1
+    [[ "$saw_inbox" == true && "$saw_mailbox" == true ]] || return 1
+    [[ "$isolation_mode" != strict || "$group_count" -eq 3 ]] || return 1
+  else
+    [[ "$saw_inbox" == "$saw_mailbox" ]] || return 1
+    if [[ "$isolation_mode" == strict ]]; then
+      [[ "$group_count" -eq 1 || "$group_count" -eq 3 ]] || return 1
+    fi
   fi
 }
 
 validate_effective_group_graph() {
   local service_groups="$1" agent_groups="$2" primary_group="$3" inbox_group="$4" mailbox_group="$5" agent_primary_group="$6"
+  local isolation_mode="${7:-strict}"
+  local agent_user="${8:-$agent_primary_group}"
   local group saw_primary=false saw_inbox=false saw_mailbox=false service_count=0
   for group in $service_groups; do
     service_count=$((service_count + 1))
@@ -286,14 +320,160 @@ validate_effective_group_graph() {
     fi
   done
   [[ "$service_count" -eq 3 && "$saw_primary" == true && "$saw_inbox" == true && "$saw_mailbox" == true ]] || return 1
-  validate_agent_group_boundary "$agent_groups" "$agent_primary_group" "$agent_primary_group" "$inbox_group" "$mailbox_group" true || return 1
+  validate_agent_group_boundary "$agent_groups" "$agent_primary_group" "$agent_user" "$inbox_group" "$mailbox_group" true "$isolation_mode" || return 1
 }
 
 validate_agent_group_boundary_preflight() {
   local agent_primary_group agent_groups
   agent_primary_group="$(id -gn "$AGENT_USER")" || return 1
   agent_groups="$(id -Gn "$AGENT_USER")" || return 1
-  validate_agent_group_boundary "$agent_groups" "$agent_primary_group" "$AGENT_USER" "$INBOX_GROUP" "$MAILBOX_GROUP" false || return 1
+  validate_agent_group_boundary "$agent_groups" "$agent_primary_group" "$AGENT_USER" "$INBOX_GROUP" "$MAILBOX_GROUP" false "$DEPLOYMENT_PROFILE" || return 1
+}
+
+direct_agent_host_admin_present() {
+  local broad_sudo="$1" passwordless_doas="$2" writable_admin_path="$3" value
+  for value in "$broad_sudo" "$passwordless_doas" "$writable_admin_path"; do
+    [[ "$value" == true || "$value" == false ]] || return 2
+  done
+  [[ "$broad_sudo" == true || "$passwordless_doas" == true || "$writable_admin_path" == true ]]
+}
+
+detect_agent_privilege_risk() {
+  local sudo_bin doas_bin probe_output socket path owner_uid
+  local broad_sudo=false passwordless_doas=false writable_admin_path=false
+  AGENT_PRIVILEGE_RISK_DETAILS=""
+
+  sudo_bin="$(resolve_trusted_executable sudo 2>/dev/null || true)"
+  if [[ -n "$sudo_bin" ]] && "$sudo_bin" -n -l -U "$AGENT_USER" -u root -- \
+    /bin/sh -c : >/dev/null 2>&1; then
+    broad_sudo=true
+    AGENT_PRIVILEGE_RISK_DETAILS+="${AGENT_PRIVILEGE_RISK_DETAILS:+,}broad-root-sudo"
+  fi
+
+  doas_bin="$(resolve_trusted_executable doas 2>/dev/null || true)"
+  if [[ -n "$doas_bin" ]]; then
+    probe_output="$(runuser -u "$AGENT_USER" -- env -i \
+      HOME="/nonexistent" PATH="$TRUSTED_PATH" LANG=C LC_ALL=C \
+      "$doas_bin" -n /usr/bin/id -u 2>/dev/null || true)"
+    if [[ "$probe_output" == "0" ]]; then
+      passwordless_doas=true
+      AGENT_PRIVILEGE_RISK_DETAILS+="${AGENT_PRIVILEGE_RISK_DETAILS:+,}passwordless-root-doas"
+    fi
+  fi
+
+  for socket in \
+    /var/run/docker.sock \
+    /run/docker.sock \
+    /var/snap/lxd/common/lxd/unix.socket \
+    /var/lib/lxd/unix.socket \
+    /var/lib/incus/unix.socket \
+    /var/run/libvirt/libvirt-sock; do
+    [[ -S "$socket" ]] || continue
+    owner_uid="$(/usr/bin/stat -Lc '%u' -- "$socket" 2>/dev/null || true)"
+    if [[ "$owner_uid" == "0" ]] && runuser -u "$AGENT_USER" -- env -i \
+      HOME="/nonexistent" PATH="$TRUSTED_PATH" LANG=C LC_ALL=C \
+      /usr/bin/test -w "$socket" >/dev/null 2>&1; then
+      writable_admin_path=true
+      AGENT_PRIVILEGE_RISK_DETAILS+="${AGENT_PRIVILEGE_RISK_DETAILS:+,}writable-root-control:$socket"
+      break
+    fi
+  done
+
+  for path in /etc/sudoers /etc/sudoers.d /etc/systemd/system /usr/local/bin /usr/local/sbin; do
+    [[ -e "$path" && ! -L "$path" ]] || continue
+    owner_uid="$(/usr/bin/stat -Lc '%u' -- "$path" 2>/dev/null || true)"
+    if [[ "$owner_uid" == "0" ]] && runuser -u "$AGENT_USER" -- env -i \
+      HOME="/nonexistent" PATH="$TRUSTED_PATH" LANG=C LC_ALL=C \
+      /usr/bin/test -w "$path" >/dev/null 2>&1; then
+      writable_admin_path=true
+      AGENT_PRIVILEGE_RISK_DETAILS+="${AGENT_PRIVILEGE_RISK_DETAILS:+,}writable-root-path:$path"
+      break
+    fi
+  done
+
+  direct_agent_host_admin_present "$broad_sudo" "$passwordless_doas" "$writable_admin_path"
+}
+
+validate_privileged_agent_acknowledgment() {
+  local isolation_mode="$1" privileged_risk="$2" acknowledged="$3"
+  [[ "$isolation_mode" == standard || "$isolation_mode" == strict ]] || return 1
+  [[ "$privileged_risk" == true || "$privileged_risk" == false ]] || return 1
+  [[ "$acknowledged" == true || "$acknowledged" == false ]] || return 1
+  if [[ "$isolation_mode" == strict ]]; then
+    [[ "$privileged_risk" == false && "$acknowledged" == false ]] || return 1
+  elif [[ "$privileged_risk" == true ]]; then
+    [[ "$acknowledged" == true ]] || return 1
+  fi
+}
+
+validate_agent_access_probe_results() {
+  local can_write_inbox="$1" can_traverse_inbox="$2" can_list_inbox="$3"
+  local can_read_config="$4" can_write_config="$5" can_read_home="$6"
+  local can_read_private="$7" can_write_private="$8" can_read_audit="$9"
+  local can_write_audit="${10}" grant_audit_read="${11}"
+  local value
+  for value in \
+    "$can_write_inbox" "$can_traverse_inbox" "$can_list_inbox" \
+    "$can_read_config" "$can_write_config" "$can_read_home" \
+    "$can_read_private" "$can_write_private" "$can_read_audit" \
+    "$can_write_audit" "$grant_audit_read"; do
+    [[ "$value" == true || "$value" == false ]] || return 1
+  done
+  [[ "$can_write_inbox" == true && "$can_traverse_inbox" == true ]] || return 1
+  [[ "$can_list_inbox" == false ]] || return 1
+  [[ "$can_read_config" == false && "$can_write_config" == false ]] || return 1
+  [[ "$can_read_home" == false ]] || return 1
+  [[ "$can_read_private" == false && "$can_write_private" == false ]] || return 1
+  [[ "$can_write_audit" == false ]] || return 1
+  [[ "$can_read_audit" == "$grant_audit_read" ]] || return 1
+}
+
+agent_test_path_access() {
+  runuser -u "$AGENT_USER" -- env -i \
+    HOME="/nonexistent" PATH="$TRUSTED_PATH" LANG=C LC_ALL=C \
+    /usr/bin/test "$1" "$2" >/dev/null 2>&1
+}
+
+verify_agent_access_boundary() {
+  local inbox="$INSTALL_DIR/drafts/inbox" private_state="$INSTALL_DIR/drafts/pending"
+  local config="$INSTALL_DIR/config/config.yaml" audit="$INSTALL_DIR/audit.log"
+  local probe_path="$inbox/.nightdrop-access-probe.$$.${RANDOM}"
+  local owner
+  local can_write_inbox=false can_traverse_inbox=false can_list_inbox=false
+  local can_read_config=false can_write_config=false can_read_home=false
+  local can_read_private=false can_write_private=false can_read_audit=false can_write_audit=false
+
+  validate_agent_identity_snapshot || return 1
+  [[ ! -e "$probe_path" && ! -L "$probe_path" ]] || return 1
+  if runuser -u "$AGENT_USER" -- env -i \
+    HOME="/nonexistent" PATH="$TRUSTED_PATH" LANG=C LC_ALL=C \
+    /usr/bin/touch -- "$probe_path" >/dev/null 2>&1; then
+    if [[ -f "$probe_path" && ! -L "$probe_path" ]]; then
+      owner="$(/usr/bin/stat -Lc '%U' -- "$probe_path" 2>/dev/null || true)"
+      if [[ "$owner" == "$AGENT_USER" ]]; then
+        can_write_inbox=true
+      fi
+    fi
+  fi
+  rm -f -- "$probe_path" || return 1
+  [[ ! -e "$probe_path" && ! -L "$probe_path" ]] || return 1
+
+  agent_test_path_access -x "$inbox" && can_traverse_inbox=true
+  agent_test_path_access -r "$inbox" && can_list_inbox=true
+  agent_test_path_access -r "$config" && can_read_config=true
+  agent_test_path_access -w "$config" && can_write_config=true
+  agent_test_path_access -r "$SERVICE_HOME" && can_read_home=true
+  agent_test_path_access -r "$private_state" && can_read_private=true
+  agent_test_path_access -w "$private_state" && can_write_private=true
+  agent_test_path_access -r "$audit" && can_read_audit=true
+  agent_test_path_access -w "$audit" && can_write_audit=true
+
+  validate_agent_identity_snapshot || return 1
+  validate_agent_access_probe_results \
+    "$can_write_inbox" "$can_traverse_inbox" "$can_list_inbox" \
+    "$can_read_config" "$can_write_config" "$can_read_home" \
+    "$can_read_private" "$can_write_private" "$can_read_audit" \
+    "$can_write_audit" "$GRANT_AGENT_AUDIT_READ"
 }
 
 validate_private_directory() {
@@ -360,7 +540,7 @@ validate_managed_identity_records() {
     "$all_passwd" "$all_groups" "$SERVICE_USER" "$INBOX_GROUP" "$MAILBOX_GROUP" \
     "$service_uid" "$service_gid" "$inbox_gid" "$mailbox_gid" || return 1
   validate_effective_group_graph \
-    "$service_groups" "$agent_groups" "$SERVICE_USER" "$INBOX_GROUP" "$MAILBOX_GROUP" "$agent_primary_group" || return 1
+    "$service_groups" "$agent_groups" "$SERVICE_USER" "$INBOX_GROUP" "$MAILBOX_GROUP" "$agent_primary_group" "$DEPLOYMENT_PROFILE" "$AGENT_USER" || return 1
   validate_service_home_parent || return 1
   validate_private_directory "$SERVICE_HOME" "$SERVICE_USER" "$SERVICE_USER" 700 || return 1
 }
@@ -593,7 +773,7 @@ resolve_trusted_executable() {
 validate_required_commands() {
   local name
   local -a required=(
-    chmod chown cp env find flock getent groupadd groupdel id install mkdir mktemp mv passwd pkill rm rmdir rsync runuser sleep
+    chmod chown cp env find flock getent groupadd groupdel id install mkdir mktemp mv passwd pkill rm rmdir rsync runuser sleep test
     systemctl touch useradd userdel usermod
   )
   for name in "${required[@]}"; do
@@ -1023,6 +1203,8 @@ main() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --agent-user) AGENT_USER="${2:?}"; shift 2 ;;
+    --deployment-profile) DEPLOYMENT_PROFILE="${2:?}"; shift 2 ;;
+    --acknowledge-agent-host-admin-risk) ACKNOWLEDGE_AGENT_HOST_ADMIN_RISK=true; shift ;;
     --telegram-user-id) TELEGRAM_USER_ID="${2:?}"; shift 2 ;;
     --install-dir) INSTALL_DIR="${2:?}"; shift 2 ;;
     --grant-agent-audit-read) GRANT_AGENT_AUDIT_READ=true; shift ;;
@@ -1039,6 +1221,14 @@ validate_trusted_path || exit 1
 validate_required_commands || exit 1
 if ! validate_telegram_user_id "$TELEGRAM_USER_ID"; then
   echo "--telegram-user-id must be a positive decimal integer within JavaScript's safe range." >&2
+  exit 2
+fi
+if ! validate_deployment_profile "$DEPLOYMENT_PROFILE"; then
+  echo "--deployment-profile must be standard or strict." >&2
+  exit 2
+fi
+if [[ "$DEPLOYMENT_PROFILE" == strict && "$ACKNOWLEDGE_AGENT_HOST_ADMIN_RISK" == true ]]; then
+  echo "--acknowledge-agent-host-admin-risk is valid only with --deployment-profile standard." >&2
   exit 2
 fi
 if ! validate_agent_identity "$AGENT_USER"; then
@@ -1059,8 +1249,35 @@ AGENT_UID_SNAPSHOT="$(capture_agent_identity_snapshot)" || {
   exit 1
 }
 if ! validate_agent_group_boundary_preflight; then
-  echo "--agent-user must be a dedicated unprivileged account whose only groups are its private primary group and Nightdrop capability groups." >&2
+  if [[ "$DEPLOYMENT_PROFILE" == strict ]]; then
+    echo "Strict mode requires --agent-user to have only its same-named private primary group and the two Nightdrop capability groups." >&2
+  else
+    echo "Standard mode requires a stable primary group, no Nightdrop private-group membership, and either zero or both Nightdrop capability groups." >&2
+  fi
   exit 2
+fi
+PRIVILEGED_AGENT_RISK=false
+if detect_agent_privilege_risk; then
+  PRIVILEGED_AGENT_RISK=true
+else
+  privilege_detection_status=$?
+  if [[ "$privilege_detection_status" -ne 1 ]]; then
+    echo "Could not determine whether --agent-user has direct host-administration capability." >&2
+    exit 1
+  fi
+fi
+if ! validate_privileged_agent_acknowledgment \
+  "$DEPLOYMENT_PROFILE" "$PRIVILEGED_AGENT_RISK" "$ACKNOWLEDGE_AGENT_HOST_ADMIN_RISK"; then
+  if [[ "$DEPLOYMENT_PROFILE" == strict ]]; then
+    echo "Strict mode refuses an agent identity with host-administration capability indicators." >&2
+  else
+    echo "Standard mode detected host-administration capability indicators. Re-run with --acknowledge-agent-host-admin-risk only if you accept that same-host isolation is not a hard boundary against that agent." >&2
+  fi
+  exit 2
+fi
+if [[ "$PRIVILEGED_AGENT_RISK" == true ]]; then
+  echo "WARNING: privileged agent acknowledged; Nightdrop still gates normal workflows, but same-host credentials are not structurally isolated from this agent." >&2
+  echo "Detected indicators: $AGENT_PRIVILEGE_RISK_DETAILS" >&2
 fi
 if [[ -L "$MAILBOX_CLI_PATH" || ( -e "$MAILBOX_CLI_PATH" && ! -f "$MAILBOX_CLI_PATH" ) ]]; then
   echo "Refusing unsafe existing mailbox client path: $MAILBOX_CLI_PATH" >&2
@@ -1409,6 +1626,10 @@ if ! configure_agent_audit_acl \
   "$SETFACL_BIN" \
   "$GETFACL_BIN"; then
   echo "Could not enforce the requested agent audit-log ACL policy." >&2
+  exit 1
+fi
+if ! verify_agent_access_boundary; then
+  echo "Agent filesystem access failed the behavioral write-only/private-state boundary probe." >&2
   exit 1
 fi
 
