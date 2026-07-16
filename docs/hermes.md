@@ -14,7 +14,7 @@ NO SMTP/IMAP/OAuth credentials        owns provider credentials
 NO approval bot token                 owns Telegram approval bot
 ```
 
-This makes prompt injection less dangerous: an email can influence what Hermes drafts, but it cannot make Hermes send because Hermes has no send credentials and no approval channel.
+This makes prompt injection less dangerous: an email can influence what Hermes drafts, while final execution remains behind Nightdrop's separate credentials and approval channel. The hard-boundary claim additionally requires that Hermes cannot administer the Nightdrop host or service identity.
 
 ## Hermes Built-In Approval vs Nightdrop
 
@@ -24,7 +24,7 @@ Hermes has its own approval controls for risky tool use and shell commands. Thos
 |----------|------------------------------|----------------|
 | “Should this command/tool run?” | ✅ | Not the main job |
 | “Should this exact email/reply/webhook be sent?” | Behavioral only | ✅ |
-| “Can the agent bypass the approval if it has send credentials?” | Yes, if those credentials/tools exist | No, if credentials live only in Nightdrop |
+| “Can the agent bypass the approval if it has send credentials or host administration?” | Yes, if those credentials/tools exist | No only when credentials live in Nightdrop **and** the agent cannot administer Nightdrop's trust domain |
 | “Is approval tied to a concrete payload hash?” | No general email-payload boundary | ✅ full hash + nonce |
 | “Does a separate process execute the final send?” | Usually no | ✅ |
 
@@ -47,6 +47,7 @@ For Hermes + Nightdrop to be a hard boundary:
 - Hermes must not have Gmail/Zoho/SMTP send credentials.
 - Hermes must not have raw Gmail IMAP credentials or an arbitrary IMAP client path.
 - Hermes must not have the Nightdrop Telegram bot token.
+- Hermes must not have passwordless root, writable Docker/LXD/Incus/libvirt administration sockets, or an equivalent path to Nightdrop's credentials. Use strict mode or a separate trust domain when that guarantee is required.
 - Nightdrop should run with `security.enforceProductionPermissions: true`.
 - Production directory permissions should match `docs/deployment.md`.
 
@@ -76,8 +77,11 @@ Example infrastructure command Hermes can help prepare or run after explicit sud
 ```bash
 sudo scripts/install-production.sh \
   --agent-user spacex \
+  --deployment-profile standard \
   --telegram-user-id 2061243435
 ```
+
+If the installer detects host-administration capability, it stops before identity mutation. Re-run with `--acknowledge-agent-host-admin-risk` only when you intentionally accept that Hermes could technically bypass same-host Unix permissions. For a hard same-host boundary, use a dedicated account and `--deployment-profile strict`. A separate VM is an optional high-assurance topology, not the normal installation requirement.
 
 Store the separate Telegram approval-bot token first; onboarding restarts the service:
 
@@ -188,4 +192,4 @@ security:
   enforceProductionPermissions: true
 ```
 
-Nightdrop will fail closed at startup if the write-only inbox or private state directories are misconfigured.
+Nightdrop fails closed at startup when queue path types, required modes, service ownership, or the root-owned draft parent are wrong. The installer separately validates the managed identity graph and behaviorally probes ordinary agent access. Neither check proves that every possible host-administration or privilege-escalation path is absent.

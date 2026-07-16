@@ -17,7 +17,7 @@ Nightdrop gives Hermes bounded access to named Gmail and Outlook Inbox profiles 
 
 ## Security Contract
 
-Use this skill only when the deployment preserves the structural boundary:
+This skill supports the shipped standard and strict installer profiles. Isolated deployment is an unshipped reference architecture that requires operator-supplied transport and automation. Treat Nightdrop as a hard structural boundary only when all of these are true:
 
 1. Nightdrop runs as a separate OS user, normally `nightdrop`.
 2. Hermes can write only to the inbox directory, normally `/opt/nightdrop/drafts/inbox`.
@@ -25,8 +25,9 @@ Use this skill only when the deployment preserves the structural boundary:
 4. Nightdrop config has `security.enforceProductionPermissions: true` in production.
 5. Send credentials live only in Nightdrop, not in Hermes.
 6. Mailbox access is exposed only through `/usr/local/bin/nightdrop-mailbox` and the `nightdrop-mailbox` Unix-socket capability group. Each profile fixes one provider account, Inbox folder, operations, and limits; the broker accepts no arbitrary IMAP commands, Graph paths, or caller-supplied URLs.
+7. Hermes cannot administer the Nightdrop host or service identity. Use strict mode or an isolated trust domain when this hard guarantee is required.
 
-If any of these are false, the gate is a convenience workflow, not a hard security boundary.
+If any of these are false—including an explicitly acknowledged root-equivalent Hermes account in standard mode—the gate remains a deterministic approval workflow, not a hard security boundary against that agent.
 
 ## When to Use
 
@@ -147,9 +148,10 @@ Never say “sent” unless the deterministic gate itself reports a sent status.
 
 1. **Giving Hermes send credentials.** This defeats the hard boundary. Hermes can read/search/draft; Nightdrop sends.
 2. **Running Hermes and Nightdrop as the same Unix user.** This lets Hermes tamper with pending drafts. Use the production deployment guide.
-3. **Approving truncated content.** If the body is too long for Telegram preview, keep deny-only approval unless you have a full-draft review path.
-4. **Trusting draft `from`.** It is ignored. The provider config is authoritative.
-5. **Checking status from the inbox.** The inbox is write-only; the human sees status in Telegram and audit logs.
+3. **Calling standard mode a hard boundary after acknowledging host administration.** A root-equivalent Hermes process can bypass same-host Unix permissions even though normal workflow access remains gated.
+4. **Approving truncated content.** If the body is too long for Telegram preview, keep deny-only approval unless you have a full-draft review path.
+5. **Trusting draft `from`.** It is ignored. The provider config is authoritative.
+6. **Checking status from the inbox.** The inbox is write-only; the human sees status in Telegram and audit logs.
 
 ## Verification Checklist
 
@@ -158,3 +160,4 @@ Never say “sent” unless the deterministic gate itself reports a sent status.
 - [ ] User was told the draft is pending approval, not sent
 - [ ] No send credential was used by Hermes
 - [ ] For production, `security.enforceProductionPermissions` is enabled
+- [ ] Security claims match the installed standard or strict profile; any isolated topology is separately implemented and verified by the operator

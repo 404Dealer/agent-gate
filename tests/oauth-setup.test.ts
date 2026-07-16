@@ -214,7 +214,12 @@ test('production installer rejects unmanaged service identity and capability-gro
   assert.equal(validate('validate_effective_group_graph', [
     'nightdrop nightdrop-inbox nightdrop-mailbox',
     'hermes nightdrop-inbox nightdrop-mailbox',
-    'nightdrop', 'nightdrop-inbox', 'nightdrop-mailbox', 'hermes'
+    'nightdrop', 'nightdrop-inbox', 'nightdrop-mailbox', 'hermes', 'strict'
+  ]), 0);
+  assert.notEqual(validate('validate_effective_group_graph', [
+    'nightdrop nightdrop-inbox nightdrop-mailbox',
+    'operators nightdrop-inbox nightdrop-mailbox',
+    'nightdrop', 'nightdrop-inbox', 'nightdrop-mailbox', 'operators', 'strict', 'hermes'
   ]), 0);
   for (const [serviceGroups, agentGroups] of [
     ['nightdrop nightdrop-inbox nightdrop-mailbox docker', 'hermes nightdrop-inbox nightdrop-mailbox'],
@@ -226,8 +231,76 @@ test('production installer rejects unmanaged service identity and capability-gro
     ['nightdrop nightdrop-inbox nightdrop-mailbox', 'hermes nightdrop-inbox']
   ]) {
     assert.notEqual(validate('validate_effective_group_graph', [
-      serviceGroups, agentGroups, 'nightdrop', 'nightdrop-inbox', 'nightdrop-mailbox', 'hermes'
+      serviceGroups, agentGroups, 'nightdrop', 'nightdrop-inbox', 'nightdrop-mailbox', 'hermes', 'strict'
     ]), 0);
+  }
+
+  assert.equal(validate('validate_agent_primary_group_for_profile', ['operators', 'hermes', 'standard']), 0);
+  assert.equal(validate('validate_agent_primary_group_for_profile', ['hermes', 'hermes', 'strict']), 0);
+  assert.notEqual(validate('validate_agent_primary_group_for_profile', ['operators', 'hermes', 'strict']), 0);
+
+  assert.equal(validate('validate_agent_group_boundary', [
+    'operators sudo docker nightdrop-inbox nightdrop-mailbox',
+    'operators', 'hermes', 'nightdrop-inbox', 'nightdrop-mailbox', 'true', 'standard'
+  ]), 0);
+  assert.notEqual(validate('validate_agent_group_boundary', [
+    'operators sudo docker nightdrop-inbox nightdrop-mailbox',
+    'operators', 'hermes', 'nightdrop-inbox', 'nightdrop-mailbox', 'true', 'strict'
+  ]), 0);
+  assert.notEqual(validate('validate_agent_group_boundary', [
+    'operators nightdrop nightdrop-inbox nightdrop-mailbox',
+    'operators', 'hermes', 'nightdrop-inbox', 'nightdrop-mailbox', 'true', 'standard'
+  ]), 0);
+  assert.equal(validate('validate_agent_group_boundary', [
+    'hermes nightdrop-inbox nightdrop-mailbox',
+    'hermes', 'hermes', 'nightdrop-inbox', 'nightdrop-mailbox', 'false', 'strict'
+  ]), 0);
+  assert.equal(validate('validate_agent_group_boundary', [
+    'operators sudo docker nightdrop-inbox nightdrop-mailbox',
+    'operators', 'hermes', 'nightdrop-inbox', 'nightdrop-mailbox', 'false', 'standard'
+  ]), 0);
+  assert.notEqual(validate('validate_agent_group_boundary', [
+    'operators sudo nightdrop-inbox',
+    'operators', 'hermes', 'nightdrop-inbox', 'nightdrop-mailbox', 'false', 'standard'
+  ]), 0);
+  assert.equal(validate('validate_effective_group_graph', [
+    'nightdrop nightdrop-inbox nightdrop-mailbox',
+    'operators sudo docker nightdrop-inbox nightdrop-mailbox',
+    'nightdrop', 'nightdrop-inbox', 'nightdrop-mailbox', 'operators', 'standard'
+  ]), 0);
+
+  assert.equal(validate('validate_deployment_profile', ['standard']), 0);
+  assert.equal(validate('validate_deployment_profile', ['strict']), 0);
+  assert.notEqual(validate('validate_deployment_profile', ['isolated']), 0);
+  assert.notEqual(validate('validate_deployment_profile', ['']), 0);
+
+  assert.notEqual(validate('direct_agent_host_admin_present', ['false', 'false', 'false']), 0);
+  assert.equal(validate('direct_agent_host_admin_present', ['true', 'false', 'false']), 0);
+  assert.equal(validate('direct_agent_host_admin_present', ['false', 'true', 'false']), 0);
+  assert.equal(validate('direct_agent_host_admin_present', ['false', 'false', 'true']), 0);
+  assert.notEqual(validate('direct_agent_host_admin_present', ['maybe', 'false', 'false']), 0);
+
+  assert.equal(validate('validate_privileged_agent_acknowledgment', ['standard', 'false', 'false']), 0);
+  assert.notEqual(validate('validate_privileged_agent_acknowledgment', ['standard', 'true', 'false']), 0);
+  assert.equal(validate('validate_privileged_agent_acknowledgment', ['standard', 'true', 'true']), 0);
+  assert.notEqual(validate('validate_privileged_agent_acknowledgment', ['strict', 'false', 'true']), 0);
+  assert.notEqual(validate('validate_privileged_agent_acknowledgment', ['strict', 'true', 'true']), 0);
+
+  assert.equal(validate('validate_agent_access_probe_results', [
+    'true', 'true', 'false', 'false', 'false', 'false', 'false', 'false', 'false', 'false', 'false'
+  ]), 0);
+  assert.equal(validate('validate_agent_access_probe_results', [
+    'true', 'true', 'false', 'false', 'false', 'false', 'false', 'false', 'true', 'false', 'true'
+  ]), 0);
+  for (const results of [
+    ['false', 'true', 'false', 'false', 'false', 'false', 'false', 'false', 'false', 'false', 'false'],
+    ['true', 'true', 'true', 'false', 'false', 'false', 'false', 'false', 'false', 'false', 'false'],
+    ['true', 'true', 'false', 'true', 'false', 'false', 'false', 'false', 'false', 'false', 'false'],
+    ['true', 'true', 'false', 'false', 'true', 'false', 'false', 'false', 'false', 'false', 'false'],
+    ['true', 'true', 'false', 'false', 'false', 'false', 'false', 'false', 'true', 'false', 'false'],
+    ['true', 'true', 'false', 'false', 'false', 'false', 'false', 'false', 'false', 'true', 'false']
+  ]) {
+    assert.notEqual(validate('validate_agent_access_probe_results', results), 0);
   }
 
   assert.equal(validate('validate_service_home_parent_record', ['root', 'root', '755']), 0);
@@ -623,6 +696,103 @@ test('production installer rejects unmanaged service identity and capability-gro
     await assert.rejects(readFile(mutationLog), { code: 'ENOENT' });
   } finally {
     await rm(collisionRoot, { recursive: true, force: true });
+  }
+});
+
+test('production installer behaviorally verifies agent access before service activation', async () => {
+  const installer = await readFile(new URL('../scripts/install-production.sh', import.meta.url), 'utf8');
+  const functionDefinition = installer.indexOf('verify_agent_access_boundary() {');
+  const permissionSetup = installer.lastIndexOf('chmod 640 "$INSTALL_DIR/audit.log"');
+  const probeCall = installer.lastIndexOf('if ! verify_agent_access_boundary; then');
+  const unitWrite = installer.lastIndexOf('\nUNIT_WRITTEN=true');
+  assert(functionDefinition >= 0, 'behavioral access probe must be defined');
+  assert(probeCall > permissionSetup, 'access probe must run after protected permissions are applied');
+  assert(unitWrite > probeCall, 'access probe must pass before the candidate unit can be activated');
+  assert.match(installer, /runuser -u "\$AGENT_USER" -- env -i/);
+  assert.match(installer, /validate_agent_access_probe_results/);
+  assert.match(installer, /cleanup_agent_access_probe/);
+});
+
+test('production privilege and access probes distinguish denial from execution failure', async () => {
+  const installerPath = fileURLToPath(new URL('../scripts/install-production.sh', import.meta.url));
+  const detect = (healthStatus: number, sudoStatus: number, sudoOutput: string): number | null => spawnSync('/bin/bash', [
+    '-c',
+    [
+      'source "$1"',
+      'HEALTH_STATUS="$2"',
+      'SUDO_STATUS="$3"',
+      'SUDO_OUTPUT="$4"',
+      'AGENT_USER=hermes',
+      'AGENT_UID_SNAPSHOT=1000',
+      'resolve_optional_trusted_executable() { if [[ "$1" == sudo ]]; then printf "/trusted/sudo\\n"; return 0; fi; return 1; }',
+      'runuser() { if [[ " $* " == *" /trusted/sudo "* ]]; then printf "%s\\n" "$SUDO_OUTPUT"; return "$SUDO_STATUS"; fi; printf "1000\\n"; return "$HEALTH_STATUS"; }',
+      'root_owned_path_writable_by_agent() { return 1; }',
+      'detect_agent_privilege_risk'
+    ].join('; '),
+    'installer-privilege-probe',
+    installerPath,
+    String(healthStatus),
+    String(sudoStatus),
+    sudoOutput
+  ], { encoding: 'utf8' }).status;
+
+  assert.equal(detect(0, 0, 'User hermes may run the following commands:\n    (ALL : ALL) NOPASSWD: /usr/bin/systemctl restart nightdrop'), 0);
+  assert.equal(detect(0, 0, 'User hermes may run the following commands:\n    (ALL : ALL) /usr/bin/id'), 1);
+  assert.equal(detect(0, 1, 'sudo: a password is required'), 1);
+  assert.equal(detect(0, 125, 'sudo: internal failure'), 2);
+  assert.equal(detect(126, 0, '0'), 2);
+
+  const accessFailure = spawnSync('/bin/bash', [
+    '-c',
+    'source "$1"; runuser() { return 126; }; agent_test_path_access -r /private',
+    'installer-access-probe',
+    installerPath
+  ], { encoding: 'utf8' });
+  assert.equal(accessFailure.status, 2);
+});
+
+test('production deployment profiles are explicit and security claims are scoped', async () => {
+  const installerPath = fileURLToPath(new URL('../scripts/install-production.sh', import.meta.url));
+  const [installer, watcher, readme, deployment, hermes, handoff, skill] = await Promise.all([
+    readFile(installerPath, 'utf8'),
+    readFile(new URL('../src/watcher.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../README.md', import.meta.url), 'utf8'),
+    readFile(new URL('../docs/deployment.md', import.meta.url), 'utf8'),
+    readFile(new URL('../docs/hermes.md', import.meta.url), 'utf8'),
+    readFile(new URL('../docs/credential-handoff.md', import.meta.url), 'utf8'),
+    readFile(new URL('../skill/SKILL.md', import.meta.url), 'utf8')
+  ]);
+  assert.match(installer, /DEPLOYMENT_PROFILE="standard"/);
+  assert.match(installer, /--deployment-profile standard\|strict/);
+  assert.match(installer, /--acknowledge-agent-host-admin-risk/);
+  assert.match(installer, /validate_privileged_agent_acknowledgment/);
+  assert.match(installer, /Detected indicators: \$AGENT_PRIVILEGE_RISK_DETAILS/);
+  assert.match(installer, /chown "root:\$SERVICE_GROUP" "\$INSTALL_DIR\/drafts"/);
+  assert.match(watcher, /Buffer\.allocUnsafe\(MAX_DRAFT_SIZE_BYTES \+ 1\)/);
+  assert.doesNotMatch(watcher, /source\.readFile/);
+  for (const document of [readme, deployment]) {
+    assert.match(document, /Standard/);
+    assert.match(document, /Strict/);
+    assert.match(document, /Isolated/);
+    assert.match(document, /not (?:a )?(?:hard|structural)|does \*\*not\*\* qualify/i);
+  }
+  assert.match(readme, /Isolated reference architecture \(not shipped by the installer\)/);
+  assert.match(deployment, /not selectable with `--deployment-profile`/);
+  assert.match(deployment, /does not ship this transport or deployment automation/);
+  assert.match(skill, /unshipped reference architecture/);
+  assert.doesNotMatch(readme, /cannot list, read, edit, delete, or replace drafts after submission/);
+  assert.match(readme, /Retained hard links cannot mutate the claimed copy/);
+  assert.match(deployment, /retained hard links cannot modify that claimed copy/);
+  assert.match(hermes, /optional high-assurance topology, not the normal installation requirement/);
+  assert.match(handoff, /acknowledged privileged agent does not make that stronger claim/);
+  assert.match(handoff, /workflow separation rather than a hard host boundary/);
+  assert.match(skill, /hard structural boundary only when all of these are true/);
+  assert.match(skill, /acknowledged root-equivalent Hermes account in standard mode/);
+
+  for (const option of ['--agent-user', '--deployment-profile', '--telegram-user-id', '--install-dir']) {
+    const missingValue = spawnSync('/bin/bash', [installerPath, option], { encoding: 'utf8' });
+    assert.equal(missingValue.status, 2, `${option}: ${missingValue.stderr}`);
+    assert.match(missingValue.stderr, /Missing value/);
   }
 });
 

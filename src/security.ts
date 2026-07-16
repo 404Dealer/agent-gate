@@ -1,9 +1,12 @@
-import { lstat, stat } from 'node:fs/promises';
+import { lstat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 export interface IsolationCheckInput {
   rootDir: string;
   inboxDir: string;
+  expectedServiceUid?: number;
+  expectedServiceGid?: number;
+  expectedRootUid?: number;
 }
 
 export interface IsolationCheckResult {
@@ -12,7 +15,6 @@ export interface IsolationCheckResult {
   warnings: string[];
 }
 
-const modeOf = async (path: string): Promise<number> => (await stat(path)).mode & 0o7777;
 const oct = (mode: number): string => `0${mode.toString(8)}`;
 
 export async function verifyDraftDirectoryIsolation(input: IsolationCheckInput): Promise<IsolationCheckResult> {
@@ -20,6 +22,13 @@ export async function verifyDraftDirectoryIsolation(input: IsolationCheckInput):
   const warnings: string[] = [];
   const inbox = resolve(input.inboxDir);
   const root = resolve(input.rootDir);
+  const expectedServiceUid = input.expectedServiceUid ?? process.getuid?.();
+  const expectedServiceGid = input.expectedServiceGid ?? process.getgid?.();
+  const expectedRootUid = input.expectedRootUid ?? 0;
+
+  if (expectedServiceUid === undefined || expectedServiceGid === undefined) {
+    errors.push('Production ownership checks require a POSIX process identity.');
+  }
 
   try {
     const inboxStat = await lstat(inbox);
@@ -28,6 +37,9 @@ export async function verifyDraftDirectoryIsolation(input: IsolationCheckInput):
     }
     if (!inboxStat.isDirectory()) {
       errors.push(`Inbox ${inbox} must be a directory.`);
+    }
+    if (expectedServiceUid !== undefined && inboxStat.uid !== expectedServiceUid) {
+      errors.push(`Inbox ${inbox} must be owned by service UID ${expectedServiceUid}; found ${inboxStat.uid}.`);
     }
     const mode = inboxStat.mode & 0o7777;
     if (mode !== 0o1730) {
@@ -47,7 +59,13 @@ export async function verifyDraftDirectoryIsolation(input: IsolationCheckInput):
       if (!entry.isDirectory()) {
         errors.push(`State path ${dir} must be a directory.`);
       }
-      const mode = await modeOf(dir);
+      if (expectedServiceUid !== undefined && entry.uid !== expectedServiceUid) {
+        errors.push(`State directory ${dir} must be owned by service UID ${expectedServiceUid}; found ${entry.uid}.`);
+      }
+      if (expectedServiceGid !== undefined && entry.gid !== expectedServiceGid) {
+        errors.push(`State directory ${dir} must use service GID ${expectedServiceGid}; found ${entry.gid}.`);
+      }
+      const mode = entry.mode & 0o7777;
       if (mode !== 0o700) {
         errors.push(`State directory ${dir} must be private mode 0700; found ${oct(mode)}.`);
       }
@@ -57,12 +75,22 @@ export async function verifyDraftDirectoryIsolation(input: IsolationCheckInput):
   }
 
   try {
-    const rootMode = await modeOf(root);
+    const rootEntry = await lstat(root);
+    if (rootEntry.isSymbolicLink() || !rootEntry.isDirectory()) {
+      errors.push(`Draft root ${root} must be a real directory.`);
+    }
+    if (rootEntry.uid !== expectedRootUid) {
+      errors.push(`Draft root ${root} must be owned by root UID ${expectedRootUid}; found ${rootEntry.uid}.`);
+    }
+    if (expectedServiceGid !== undefined && rootEntry.gid !== expectedServiceGid) {
+      errors.push(`Draft root ${root} must use service GID ${expectedServiceGid}; found ${rootEntry.gid}.`);
+    }
+    const rootMode = rootEntry.mode & 0o7777;
     if ((rootMode & 0o022) !== 0) {
       errors.push(`Draft root ${root} must not be group- or world-writable; found ${oct(rootMode)}.`);
     }
   } catch (err) {
-    warnings.push(`Cannot stat draft root ${root}: ${err instanceof Error ? err.message : String(err)}`);
+    errors.push(`Cannot stat draft root ${root}: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   return { ok: errors.length === 0, errors, warnings };
