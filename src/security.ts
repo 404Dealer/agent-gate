@@ -90,7 +90,7 @@ export async function verifyDraftDirectoryIsolation(input: IsolationCheckInput):
       errors.push(`Draft root ${root} must not be group- or world-writable; found ${oct(rootMode)}.`);
     }
   } catch (err) {
-    warnings.push(`Cannot stat draft root ${root}: ${err instanceof Error ? err.message : String(err)}`);
+    errors.push(`Cannot stat draft root ${root}: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   return { ok: errors.length === 0, errors, warnings };

@@ -27,6 +27,7 @@ IDENTITY_MARKER="$IDENTITY_MARKER_DIR/managed-identities-v1"
 IDENTITY_MARKER_VALUE="nightdrop-managed-identities-v1"
 INSTALL_LOCK_PATH="/run/nightdrop-install.lock"
 AGENT_UID_SNAPSHOT=""
+AGENT_ACCESS_PROBE_PATH=""
 
 usage() {
   /usr/bin/cat <<USAGE
@@ -274,17 +275,21 @@ validate_numeric_identity_graph() {
   (( primary_gid_count == 1 && inbox_gid_count == 1 && mailbox_gid_count == 1 )) || return 1
 }
 
+validate_agent_primary_group_for_profile() {
+  local agent_primary_group="$1" agent_user="$2" isolation_mode="$3"
+  [[ -n "$agent_primary_group" ]] || return 1
+  [[ "$isolation_mode" == standard || "$isolation_mode" == strict ]] || return 1
+  [[ "$isolation_mode" != strict || "$agent_primary_group" == "$agent_user" ]] || return 1
+}
+
 validate_agent_group_boundary() {
   local agent_groups="$1" agent_primary_group="$2" agent_user="$3" inbox_group="$4" mailbox_group="$5" require_capabilities="$6"
   local isolation_mode="${7:-strict}"
   local group saw_primary=false saw_inbox=false saw_mailbox=false group_count=0
   [[ "$require_capabilities" == true || "$require_capabilities" == false ]] || return 1
   [[ "$isolation_mode" == standard || "$isolation_mode" == strict ]] || return 1
-  [[ -n "$agent_primary_group" ]] || return 1
+  validate_agent_primary_group_for_profile "$agent_primary_group" "$agent_user" "$isolation_mode" || return 1
   [[ "$agent_primary_group" != "$SERVICE_USER" && "$agent_primary_group" != "$inbox_group" && "$agent_primary_group" != "$mailbox_group" ]] || return 1
-  if [[ "$isolation_mode" == strict ]]; then
-    [[ "$agent_primary_group" == "$agent_user" ]] || return 1
-  fi
   for group in $agent_groups; do
     group_count=$((group_count + 1))
     if [[ "$group" == "$SERVICE_USER" ]]; then return 1
@@ -338,27 +343,102 @@ direct_agent_host_admin_present() {
   [[ "$broad_sudo" == true || "$passwordless_doas" == true || "$writable_admin_path" == true ]]
 }
 
+resolve_optional_trusted_executable() {
+  local name="$1" discovered
+  if ! discovered="$(command -v -- "$name" 2>/dev/null)"; then
+    return 1
+  fi
+  [[ -n "$discovered" ]] || return 1
+  resolve_trusted_executable "$name" 2>/dev/null || return 2
+}
+
+agent_test_path_access() {
+  local status
+  if runuser -u "$AGENT_USER" -- env -i \
+    HOME="/nonexistent" PATH="$TRUSTED_PATH" LANG=C LC_ALL=C \
+    /usr/bin/test "$1" "$2" >/dev/null 2>&1; then
+    return 0
+  else
+    status=$?
+  fi
+  [[ "$status" -eq 1 ]] && return 1
+  return 2
+}
+
+record_agent_path_access() {
+  local result_name="$1" predicate="$2" path="$3" status
+  [[ "$result_name" =~ ^can_[a-z_]+$ ]] || return 2
+  if agent_test_path_access "$predicate" "$path"; then
+    printf -v "$result_name" '%s' true
+    return 0
+  else
+    status=$?
+  fi
+  [[ "$status" -eq 1 ]] || return 2
+}
+
+root_owned_path_writable_by_agent() {
+  local path="$1" owner_uid status
+  owner_uid="$(/usr/bin/stat -Lc '%u' -- "$path" 2>/dev/null)" || return 2
+  [[ "$owner_uid" == "0" ]] || return 1
+  if agent_test_path_access -w "$path"; then
+    return 0
+  else
+    status=$?
+  fi
+  [[ "$status" -eq 1 ]] && return 1
+  return 2
+}
+
 detect_agent_privilege_risk() {
-  local sudo_bin doas_bin probe_output socket path owner_uid
+  local sudo_bin doas_bin probe_output probe_status socket path child status
+  local root_nopasswd_pattern='\((root|ALL)([[:space:]]*:[^)]*)?\)[[:space:]]+NOPASSWD:'
   local broad_sudo=false passwordless_doas=false writable_admin_path=false
+  local -a admin_children=()
   AGENT_PRIVILEGE_RISK_DETAILS=""
 
-  sudo_bin="$(resolve_trusted_executable sudo 2>/dev/null || true)"
-  if [[ -n "$sudo_bin" ]] && "$sudo_bin" -n -l -U "$AGENT_USER" -u root -- \
-    /bin/sh -c : >/dev/null 2>&1; then
-    broad_sudo=true
-    AGENT_PRIVILEGE_RISK_DETAILS+="${AGENT_PRIVILEGE_RISK_DETAILS:+,}broad-root-sudo"
+  probe_output="$(runuser -u "$AGENT_USER" -- env -i \
+    HOME="/nonexistent" PATH="$TRUSTED_PATH" LANG=C LC_ALL=C \
+    /usr/bin/id -u 2>/dev/null)" || return 2
+  [[ "$probe_output" == "$AGENT_UID_SNAPSHOT" ]] || return 2
+
+  if sudo_bin="$(resolve_optional_trusted_executable sudo)"; then
+    if probe_output="$(runuser -u "$AGENT_USER" -- env -i \
+      HOME="/nonexistent" PATH="$TRUSTED_PATH" LANG=C LC_ALL=C \
+      "$sudo_bin" -n -k -l 2>&1)"; then
+      if [[ "$probe_output" =~ $root_nopasswd_pattern ]]; then
+        broad_sudo=true
+        AGENT_PRIVILEGE_RISK_DETAILS+="${AGENT_PRIVILEGE_RISK_DETAILS:+,}root-nopasswd-sudo-policy"
+      fi
+    else
+      probe_status=$?
+      [[ "$probe_status" -eq 1 ]] || return 2
+      [[ "$probe_output" == *"a password is required"* || \
+         "$probe_output" == *"is not allowed to execute"* || \
+         "$probe_output" == *"may not run sudo"* ]] || return 2
+    fi
+  else
+    status=$?
+    [[ "$status" -eq 1 ]] || return 2
   fi
 
-  doas_bin="$(resolve_trusted_executable doas 2>/dev/null || true)"
-  if [[ -n "$doas_bin" ]]; then
-    probe_output="$(runuser -u "$AGENT_USER" -- env -i \
+  if doas_bin="$(resolve_optional_trusted_executable doas)"; then
+    if probe_output="$(runuser -u "$AGENT_USER" -- env -i \
       HOME="/nonexistent" PATH="$TRUSTED_PATH" LANG=C LC_ALL=C \
-      "$doas_bin" -n /usr/bin/id -u 2>/dev/null || true)"
-    if [[ "$probe_output" == "0" ]]; then
+      "$doas_bin" -n /usr/bin/id -u 2>&1)"; then
+      [[ "$probe_output" == "0" ]] || return 2
       passwordless_doas=true
       AGENT_PRIVILEGE_RISK_DETAILS+="${AGENT_PRIVILEGE_RISK_DETAILS:+,}passwordless-root-doas"
+    else
+      probe_status=$?
+      [[ "$probe_status" -eq 1 ]] || return 2
+      [[ "$probe_output" == *"Authorization required"* || \
+         "$probe_output" == *"Operation not permitted"* || \
+         "$probe_output" == *"not permitted"* ]] || return 2
     fi
+  else
+    status=$?
+    [[ "$status" -eq 1 ]] || return 2
   fi
 
   for socket in \
@@ -369,25 +449,41 @@ detect_agent_privilege_risk() {
     /var/lib/incus/unix.socket \
     /var/run/libvirt/libvirt-sock; do
     [[ -S "$socket" ]] || continue
-    owner_uid="$(/usr/bin/stat -Lc '%u' -- "$socket" 2>/dev/null || true)"
-    if [[ "$owner_uid" == "0" ]] && runuser -u "$AGENT_USER" -- env -i \
-      HOME="/nonexistent" PATH="$TRUSTED_PATH" LANG=C LC_ALL=C \
-      /usr/bin/test -w "$socket" >/dev/null 2>&1; then
+    if root_owned_path_writable_by_agent "$socket"; then
       writable_admin_path=true
       AGENT_PRIVILEGE_RISK_DETAILS+="${AGENT_PRIVILEGE_RISK_DETAILS:+,}writable-root-control:$socket"
       break
+    else
+      status=$?
     fi
+    [[ "$status" -eq 1 ]] || return 2
   done
 
   for path in /etc/sudoers /etc/sudoers.d /etc/systemd/system /usr/local/bin /usr/local/sbin; do
-    [[ -e "$path" && ! -L "$path" ]] || continue
-    owner_uid="$(/usr/bin/stat -Lc '%u' -- "$path" 2>/dev/null || true)"
-    if [[ "$owner_uid" == "0" ]] && runuser -u "$AGENT_USER" -- env -i \
-      HOME="/nonexistent" PATH="$TRUSTED_PATH" LANG=C LC_ALL=C \
-      /usr/bin/test -w "$path" >/dev/null 2>&1; then
+    [[ -e "$path" ]] || continue
+    if root_owned_path_writable_by_agent "$path"; then
       writable_admin_path=true
       AGENT_PRIVILEGE_RISK_DETAILS+="${AGENT_PRIVILEGE_RISK_DETAILS:+,}writable-root-path:$path"
       break
+    else
+      status=$?
+    fi
+    [[ "$status" -eq 1 ]] || return 2
+    if [[ -d "$path" && ! -L "$path" ]]; then
+      shopt -s nullglob dotglob
+      admin_children=("$path"/*)
+      shopt -u nullglob dotglob
+      for child in "${admin_children[@]}"; do
+        [[ -e "$child" ]] || continue
+        if root_owned_path_writable_by_agent "$child"; then
+          writable_admin_path=true
+          AGENT_PRIVILEGE_RISK_DETAILS+="${AGENT_PRIVILEGE_RISK_DETAILS:+,}writable-root-path:$child"
+          break 2
+        else
+          status=$?
+        fi
+        [[ "$status" -eq 1 ]] || return 2
+      done
     fi
   done
 
@@ -428,45 +524,49 @@ validate_agent_access_probe_results() {
   [[ "$can_read_audit" == "$grant_audit_read" ]] || return 1
 }
 
-agent_test_path_access() {
-  runuser -u "$AGENT_USER" -- env -i \
-    HOME="/nonexistent" PATH="$TRUSTED_PATH" LANG=C LC_ALL=C \
-    /usr/bin/test "$1" "$2" >/dev/null 2>&1
+cleanup_agent_access_probe() {
+  [[ -n "$AGENT_ACCESS_PROBE_PATH" ]] || return 0
+  case "$AGENT_ACCESS_PROBE_PATH" in
+    "$INSTALL_DIR/drafts/inbox/.nightdrop-access-probe."*) ;;
+    *) return 1 ;;
+  esac
+  rm -f -- "$AGENT_ACCESS_PROBE_PATH" || return 1
+  [[ ! -e "$AGENT_ACCESS_PROBE_PATH" && ! -L "$AGENT_ACCESS_PROBE_PATH" ]] || return 1
+  AGENT_ACCESS_PROBE_PATH=""
 }
 
 verify_agent_access_boundary() {
   local inbox="$INSTALL_DIR/drafts/inbox" private_state="$INSTALL_DIR/drafts/pending"
   local config="$INSTALL_DIR/config/config.yaml" audit="$INSTALL_DIR/audit.log"
-  local probe_path="$inbox/.nightdrop-access-probe.$$.${RANDOM}"
   local owner
   local can_write_inbox=false can_traverse_inbox=false can_list_inbox=false
   local can_read_config=false can_write_config=false can_read_home=false
   local can_read_private=false can_write_private=false can_read_audit=false can_write_audit=false
 
   validate_agent_identity_snapshot || return 1
-  [[ ! -e "$probe_path" && ! -L "$probe_path" ]] || return 1
+  AGENT_ACCESS_PROBE_PATH="$inbox/.nightdrop-access-probe.$$.${RANDOM}"
+  [[ ! -e "$AGENT_ACCESS_PROBE_PATH" && ! -L "$AGENT_ACCESS_PROBE_PATH" ]] || return 1
   if runuser -u "$AGENT_USER" -- env -i \
     HOME="/nonexistent" PATH="$TRUSTED_PATH" LANG=C LC_ALL=C \
-    /usr/bin/touch -- "$probe_path" >/dev/null 2>&1; then
-    if [[ -f "$probe_path" && ! -L "$probe_path" ]]; then
-      owner="$(/usr/bin/stat -Lc '%U' -- "$probe_path" 2>/dev/null || true)"
+    /usr/bin/touch -- "$AGENT_ACCESS_PROBE_PATH" >/dev/null 2>&1; then
+    if [[ -f "$AGENT_ACCESS_PROBE_PATH" && ! -L "$AGENT_ACCESS_PROBE_PATH" ]]; then
+      owner="$(/usr/bin/stat -Lc '%U' -- "$AGENT_ACCESS_PROBE_PATH" 2>/dev/null || true)"
       if [[ "$owner" == "$AGENT_USER" ]]; then
         can_write_inbox=true
       fi
     fi
   fi
-  rm -f -- "$probe_path" || return 1
-  [[ ! -e "$probe_path" && ! -L "$probe_path" ]] || return 1
+  cleanup_agent_access_probe || return 1
 
-  agent_test_path_access -x "$inbox" && can_traverse_inbox=true
-  agent_test_path_access -r "$inbox" && can_list_inbox=true
-  agent_test_path_access -r "$config" && can_read_config=true
-  agent_test_path_access -w "$config" && can_write_config=true
-  agent_test_path_access -r "$SERVICE_HOME" && can_read_home=true
-  agent_test_path_access -r "$private_state" && can_read_private=true
-  agent_test_path_access -w "$private_state" && can_write_private=true
-  agent_test_path_access -r "$audit" && can_read_audit=true
-  agent_test_path_access -w "$audit" && can_write_audit=true
+  record_agent_path_access can_traverse_inbox -x "$inbox" || return 1
+  record_agent_path_access can_list_inbox -r "$inbox" || return 1
+  record_agent_path_access can_read_config -r "$config" || return 1
+  record_agent_path_access can_write_config -w "$config" || return 1
+  record_agent_path_access can_read_home -r "$SERVICE_HOME" || return 1
+  record_agent_path_access can_read_private -r "$private_state" || return 1
+  record_agent_path_access can_write_private -w "$private_state" || return 1
+  record_agent_path_access can_read_audit -r "$audit" || return 1
+  record_agent_path_access can_write_audit -w "$audit" || return 1
 
   validate_agent_identity_snapshot || return 1
   validate_agent_access_probe_results \
@@ -528,7 +628,7 @@ validate_managed_identity_records() {
   service_groups="$(id -Gn "$SERVICE_USER")" || return 1
   agent_groups="$(id -Gn "$AGENT_USER")" || return 1
   agent_primary_group="$(id -gn "$AGENT_USER")" || return 1
-  [[ "$agent_primary_group" == "$AGENT_USER" ]] || return 1
+  validate_agent_primary_group_for_profile "$agent_primary_group" "$AGENT_USER" "$DEPLOYMENT_PROFILE" || return 1
   IFS=: read -r _ _ service_uid service_gid _ <<< "$service_record"
   IFS=: read -r _ _ inbox_gid _ <<< "$inbox_record"
   IFS=: read -r _ _ mailbox_gid _ <<< "$mailbox_record"
@@ -1200,13 +1300,25 @@ perform_deployment_rollback() {
 }
 
 main() {
+local option
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --agent-user) AGENT_USER="${2:?}"; shift 2 ;;
-    --deployment-profile) DEPLOYMENT_PROFILE="${2:?}"; shift 2 ;;
+    --agent-user|--deployment-profile|--telegram-user-id|--install-dir)
+      option="$1"
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for $option" >&2
+        usage
+        exit 2
+      fi
+      case "$option" in
+        --agent-user) AGENT_USER="$2" ;;
+        --deployment-profile) DEPLOYMENT_PROFILE="$2" ;;
+        --telegram-user-id) TELEGRAM_USER_ID="$2" ;;
+        --install-dir) INSTALL_DIR="$2" ;;
+      esac
+      shift 2
+      ;;
     --acknowledge-agent-host-admin-risk) ACKNOWLEDGE_AGENT_HOST_ADMIN_RISK=true; shift ;;
-    --telegram-user-id) TELEGRAM_USER_ID="${2:?}"; shift 2 ;;
-    --install-dir) INSTALL_DIR="${2:?}"; shift 2 ;;
     --grant-agent-audit-read) GRANT_AGENT_AUDIT_READ=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; usage; exit 2 ;;
@@ -1389,6 +1501,7 @@ fi
 restore_previous_deployment() {
   local status="${1-$?}"
   trap - EXIT
+  cleanup_agent_access_probe || status=1
   if ! perform_deployment_rollback "$status"; then
     [[ "$status" -ne 0 ]] || status=1
   fi
@@ -1608,6 +1721,7 @@ chown -R "$SERVICE_USER:$SERVICE_GROUP" "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
 chmod 600 "$CONFIG_DIR/config.yaml"
 
+chown "root:$SERVICE_GROUP" "$INSTALL_DIR/drafts"
 chmod 711 "$INSTALL_DIR/drafts"
 chown "$SERVICE_USER:$INBOX_GROUP" "$INSTALL_DIR/drafts/inbox"
 chmod 1730 "$INSTALL_DIR/drafts/inbox"

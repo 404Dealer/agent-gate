@@ -24,7 +24,7 @@ Hermes has its own approval controls for risky tool use and shell commands. Thos
 |----------|------------------------------|----------------|
 | “Should this command/tool run?” | ✅ | Not the main job |
 | “Should this exact email/reply/webhook be sent?” | Behavioral only | ✅ |
-| “Can the agent bypass the approval if it has send credentials?” | Yes, if those credentials/tools exist | No, if credentials live only in Nightdrop |
+| “Can the agent bypass the approval if it has send credentials or host administration?” | Yes, if those credentials/tools exist | No only when credentials live in Nightdrop **and** the agent cannot administer Nightdrop's trust domain |
 | “Is approval tied to a concrete payload hash?” | No general email-payload boundary | ✅ full hash + nonce |
 | “Does a separate process execute the final send?” | Usually no | ✅ |
 

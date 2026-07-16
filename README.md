@@ -42,7 +42,7 @@ Nightdrop is only a **hard security boundary** when these requirements are true:
 | Requirement | Why it matters |
 |-------------|----------------|
 | Nightdrop runs as a separate OS user | Prevents the AI agent process from reading/modifying pending or approved drafts |
-| The agent has dropbox access to the inbox | The agent cannot enumerate the inbox or access service-claimed `pending/` state. It still controls its own known filename until Nightdrop atomically claims it. |
+| The agent has dropbox access to the inbox | The agent cannot enumerate the inbox or access service-claimed `pending/` state. It still controls its own known inode until Nightdrop captures a detached private copy; removal of the unchanged inbox entry is a separate best-effort cleanup step. |
 | Send credentials live only in Nightdrop | If the agent also has SMTP, Gmail, Outlook, or Zoho send credentials, it can bypass the gate |
 | The approval bot token is not available to the agent | Prevents the agent from approving its own drafts |
 | Gmail/Outlook mailbox access is exposed only through the bounded Unix-socket broker | Keeps Gmail App Passwords, Outlook OAuth tokens, arbitrary IMAP commands, and unrestricted Graph calls outside the agent process |
@@ -54,11 +54,11 @@ Nightdrop is only a **hard security boundary** when these requirements are true:
 
 | Profile | Best for | Security statement |
 |---------|----------|--------------------|
-| **Standard** (default) | Existing self-hosted agents and personal operators | Enforces the write-only/private filesystem behavior. Extra agent groups are allowed. Detected host-admin capability requires `--acknowledge-agent-host-admin-risk` and means the same-host credential boundary is not hard against that agent. |
+| **Standard** (default) | Existing self-hosted agents and personal operators | Verifies dropbox submission plus private-state denial under ordinary agent access. Extra agent groups are allowed. Detected host-admin capability requires `--acknowledge-agent-host-admin-risk` and means the same-host credential boundary is not hard against that agent. |
 | **Strict** | Security-sensitive same-host deployments | Requires a dedicated agent account with only its private primary group plus the two Nightdrop capability groups. Privileged capability indicators are rejected. |
-| **Isolated** | Advanced/high-assurance deployments | Places Nightdrop in a separate trust domain the agent cannot administer. This is optional topology guidance, not a requirement for normal use. |
+| **Isolated reference architecture (not shipped by the installer)** | Advanced/high-assurance deployments | Places Nightdrop in a separate trust domain the agent cannot administer. Nightdrop does not ship the required cross-domain transport or deployment automation. |
 
-The standard-mode detector tests selected direct paths: broad noninteractive root `sudo`, passwordless root `doas`, and effective write access to known root-owned administration sockets and paths. Group names alone do not trigger acknowledgment. A negative result is not proof that no other administration path exists; operators must still account for custom policy, credentials, capabilities, and privilege-escalation paths.
+The standard-mode detector tests selected direct paths: listed root/ALL `NOPASSWD` sudo policy (including command-specific entries), passwordless root `doas`, and effective write access to known root-owned administration sockets, paths, and their direct children. The sudo probe uses `sudo -n -k -l`, so it invalidates the agent account's cached sudo timestamp. Group names alone do not trigger acknowledgment. A negative result is not proof that no other administration path exists; operators must still account for custom policy, credentials, capabilities, and privilege-escalation paths.
 
 If you run Nightdrop and your agent as the same Unix user, give the agent send or approval credentials, or acknowledge a root-equivalent agent in standard mode, Nightdrop remains useful as a deterministic approval workflow—but it is **not** a hard same-host credential boundary against that agent.
 
@@ -500,7 +500,7 @@ nightdrop/
 │   ├── config.ts         # Config loader + secret resolution
 │   ├── oauth-setup.ts    # Human-only PKCE OAuth CLI (device fallback for Outlook)
 │   ├── oauth/            # PKCE, callback, provider OAuth, secure persistence
-│   ├── watcher.ts        # File watcher (inbox → pending)
+│   ├── watcher.ts        # File watcher (detached inbox capture → pending)
 │   ├── bot.ts            # Telegram bot (previews + callbacks)
 │   ├── executor.ts       # Reads approved drafts, dispatches to providers
 │   ├── schema.ts         # Zod schemas + validation
@@ -515,7 +515,7 @@ nightdrop/
 │       └── log-only.ts              # Dry-run logger
 ├── drafts/               # Draft queue directories
 │   ├── inbox/            # Public dropbox (agents write here)
-│   ├── pending/          # Internal (watcher moves files here)
+│   ├── pending/          # Internal (watcher writes detached private copies here)
 │   ├── approved/         # Human-approved
 │   ├── sent/             # Successfully executed
 │   ├── denied/           # Human-denied

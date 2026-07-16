@@ -153,6 +153,19 @@ test('production isolation verifier rejects state not owned by the service ident
   }
 });
 
+test('production isolation verifier treats a missing draft-root stat as an error', async () => {
+  const parent = await mktempDir();
+  const root = join(parent, 'missing-root');
+  try {
+    const result = await verifyDraftDirectoryIsolation({ rootDir: root, inboxDir: join(root, 'inbox') });
+    assert.equal(result.ok, false);
+    assert(result.errors.some((message) => message.includes('Cannot stat draft root')));
+    assert.equal(result.warnings.some((message) => message.includes('Cannot stat draft root')), false);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test('watcher detaches an agent-owned hard-linked inode before exposing pending state', async () => {
   const root = await mktempDir();
   const watcher = new DraftWatcher({ rootDir: root, inboxDir: join(root, 'inbox'), pollIntervalMs: 20 });
@@ -192,6 +205,28 @@ test('watcher detaches an agent-owned hard-linked inode before exposing pending 
     );
     assert.notEqual(pendingStat.ino, retainedStat.ino);
     assert.equal(pendingStat.mode & 0o777, 0o600);
+  } finally {
+    await watcher.stop();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('watcher preserves malformed inbox source when failure evidence cannot be created', async () => {
+  const root = await mktempDir();
+  const inbox = join(root, 'inbox');
+  const watcher = new DraftWatcher({ rootDir: root, inboxDir: inbox, pollIntervalMs: 20 });
+  try {
+    await mkdir(inbox, { recursive: true });
+    await watcher.start();
+    const failedPath = join(root, 'failed', 'malformed.json');
+    const inboxPath = join(inbox, 'malformed.json');
+    await writeFile(failedPath, 'existing failure evidence', 'utf8');
+    await writeFile(inboxPath, '{not-json', 'utf8');
+    await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
+
+    assert.equal(await readFile(inboxPath, 'utf8'), '{not-json');
+    assert.equal(await readFile(failedPath, 'utf8'), 'existing failure evidence');
+    await assert.rejects(stat(join(root, 'pending', 'malformed.json')), { code: 'ENOENT' });
   } finally {
     await watcher.stop();
     await rm(root, { recursive: true, force: true });

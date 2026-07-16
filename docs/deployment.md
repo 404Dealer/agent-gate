@@ -1,22 +1,22 @@
 # Production Deployment Guide
 
-This guide covers adoption-friendly standard deployment, strict same-host isolation, and optional isolated topology. In every mode, the installer verifies that ordinary agent access can create an inbox entry but cannot enumerate the inbox or access service-claimed private state. A submitting agent controls its own known inbox inode only until Nightdrop captures a bounded snapshot into a new exclusive `0600` service-owned `pending/` inode; retained hard links cannot modify that claimed copy.
+This guide covers the installer-shipped standard and strict profiles plus an unshipped isolated reference architecture. In both installer profiles, the installer verifies that ordinary agent access can create an inbox entry but cannot enumerate the inbox or access service-claimed private state. A submitting agent controls its own known inbox inode only until Nightdrop captures a bounded snapshot into a new exclusive `0600` service-owned `pending/` inode; retained hard links cannot modify that claimed copy.
 
 ## Overview
 
-Production deployment has one goal: the agent can submit drafts, but cannot approve, alter, inspect, or send them.
+Production deployment has one goal: under the selected profile's stated trust assumptions, the agent can submit drafts but cannot approve, alter, inspect, or send service-claimed actions. An acknowledged host-admin-capable agent in standard mode is explicitly outside that hard-boundary claim.
 
 ## Choose a Deployment Profile
 
 | Profile | Agent account | Installer behavior | Guarantee |
 |---------|---------------|--------------------|-----------|
-| **Standard** (default) | Existing non-root account; unrelated supplementary groups allowed | Verifies the real write-only/private-state access boundary. Host-admin indicators require `--acknowledge-agent-host-admin-risk`. | Deterministic approval and normal Unix isolation. An acknowledged host-admin-capable agent can bypass same-host credential permissions. |
+| **Standard** (default) | Existing non-root account; unrelated supplementary groups allowed | Verifies dropbox submission and private-state denial under ordinary agent access. Host-admin indicators require `--acknowledge-agent-host-admin-risk`. | Deterministic approval and normal Unix isolation. An acknowledged host-admin-capable agent can bypass same-host credential permissions. |
 | **Strict** | Dedicated account with a same-named private primary group | Allows only the primary group plus `nightdrop-inbox` and `nightdrop-mailbox`; rejects privilege indicators. | Hard same-host agent/service boundary under the documented OS, credential, and approval assumptions. |
-| **Isolated** | Agent cannot administer Nightdrop's trust domain | Deploy Nightdrop in a VM/container runtime or host that the agent cannot administer, and expose only a fixed submission/broker transport. | Strongest isolation; optional and requires an operator-supplied transport because this installer configures local paths and Unix sockets. |
+| **Isolated reference architecture — not an installer profile** | Agent cannot administer Nightdrop's trust domain | Operator deploys Nightdrop separately and supplies a fixed cross-domain submission/broker transport. | Strongest isolation concept; the repository does not ship this transport or deployment automation. |
 
-The isolated profile is not required for ordinary Nightdrop use. It is an advanced option when the agent must retain unrestricted administration of its own host while Nightdrop credentials must remain outside that host's trust domain. A container controlled by an agent with administrative access to the same container host does **not** qualify as isolated.
+The isolated reference architecture is not selectable with `--deployment-profile`; only `standard` and `strict` are shipped. It is optional guidance for cases where the agent must retain unrestricted administration of its own host while Nightdrop credentials remain outside that host's trust domain. A container controlled by an agent with administrative access to the same container host does **not** qualify as isolated.
 
-### Requirements in every production profile
+### Requirements in both installer-shipped profiles
 
 - Separate Unix service user for Nightdrop, for example `nightdrop`.
 - Dedicated inbox group, for example `nightdrop-inbox`.
@@ -28,7 +28,7 @@ The isolated profile is not required for ordinary Nightdrop use. It is an advanc
 - Trusted `getfacl` and `setfacl` executables are installed; both the default audit denial and an explicit read grant must be verifiable.
 - `security.enforceProductionPermissions: true` in config.
 
-Strict mode additionally requires a same-named private primary group and no supplementary groups except `nightdrop-inbox` and `nightdrop-mailbox`. Standard mode allows unrelated groups but requires explicit acknowledgment when effective probes detect broad noninteractive root `sudo`, passwordless root `doas`, or write access to known root-owned administration sockets or paths. Group names alone are not proof of privilege. A negative probe does not attest that custom policy, credentials, capabilities, or unknown escalation paths are absent.
+Strict mode additionally requires a same-named private primary group and no supplementary groups except `nightdrop-inbox` and `nightdrop-mailbox`. Standard mode allows unrelated groups but requires explicit acknowledgment when effective probes detect listed root/ALL `NOPASSWD` sudo policy (including command-specific entries), passwordless root `doas`, or write access to known root-owned administration sockets, paths, or their direct children. The sudo probe uses `sudo -n -k -l` and therefore invalidates the agent account's cached sudo timestamp. Group names alone are not proof of privilege. A negative probe does not attest that custom policy, credentials, capabilities, or unknown escalation paths are absent.
 
 If any universal requirement is skipped, Nightdrop may still work, but it is no longer enforcing the documented production boundary. In standard mode, acknowledging a privileged agent intentionally narrows the claim to deterministic approval and normal, non-elevated filesystem behavior.
 
@@ -103,7 +103,7 @@ After applying ownership, modes, and the optional audit ACL, the installer runs 
 | `/opt/nightdrop/node_modules/` | `root:nightdrop` | group read/execute | Service-readable dependencies, not service-writable |
 | `/opt/nightdrop/config/` | `nightdrop:nightdrop` | `700` | Private atomic config updates |
 | `/opt/nightdrop/config/config.yaml` | `nightdrop:nightdrop` | `600` | Private configuration; Hermes has no access |
-| `/opt/nightdrop/drafts/` | `root:root` | `711` | Traverse only |
+| `/opt/nightdrop/drafts/` | `root:nightdrop` | `711` | Root-owned parent with the service primary GID; traverse only |
 | `/opt/nightdrop/drafts/inbox/` | `nightdrop:nightdrop-inbox` | `1730` | Hermes **write only** dropbox |
 | `/opt/nightdrop/drafts/{pending,approved,sent,denied,failed}/` | `nightdrop:nightdrop` | `700` | Private state |
 | `/opt/nightdrop/audit.log` | `nightdrop:nightdrop` | `640` + optional ACL | Hermes/operator read only when explicitly granted |
@@ -358,7 +358,7 @@ sg nightdrop-inbox -c 'cat > /opt/nightdrop/drafts/inbox/my-draft.json << EOF
 EOF'
 ```
 
-The file lands in the dropbox. Nightdrop captures a bounded snapshot into a new exclusive `0600` service-owned inode under `pending/`, removes the unchanged inbox entry, and sends you a Telegram preview. The agent cannot access the claimed copy through the documented capability, even if it retained a hard link to its original inode.
+The file lands in the dropbox. Nightdrop captures a bounded snapshot into a new exclusive `0600` service-owned inode under `pending/`, then conditionally removes the same unchanged inbox entry and sends a Telegram preview. The detached pending copy remains authoritative even if inbox cleanup fails. The agent cannot access the claimed copy through the documented capability, even if it retained a hard link to its original inode.
 
 ## Verifying Isolation
 

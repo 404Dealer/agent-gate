@@ -17,7 +17,7 @@ Nightdrop gives Hermes bounded access to named Gmail and Outlook Inbox profiles 
 
 ## Security Contract
 
-This skill supports every deployment profile. Treat Nightdrop as a hard structural boundary only when all of these are true:
+This skill supports the shipped standard and strict installer profiles. Isolated deployment is an unshipped reference architecture that requires operator-supplied transport and automation. Treat Nightdrop as a hard structural boundary only when all of these are true:
 
 1. Nightdrop runs as a separate OS user, normally `nightdrop`.
 2. Hermes can write only to the inbox directory, normally `/opt/nightdrop/drafts/inbox`.
@@ -160,4 +160,4 @@ Never say “sent” unless the deterministic gate itself reports a sent status.
 - [ ] User was told the draft is pending approval, not sent
 - [ ] No send credential was used by Hermes
 - [ ] For production, `security.enforceProductionPermissions` is enabled
-- [ ] Security claims match the installed standard, strict, or isolated deployment profile
+- [ ] Security claims match the installed standard or strict profile; any isolated topology is separately implemented and verified by the operator
